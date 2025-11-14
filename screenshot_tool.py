@@ -1,6 +1,5 @@
 import ctypes
 from ctypes import wintypes
-import copy
 import json
 import os
 import sys
@@ -62,6 +61,23 @@ CLASSIC_COLORS = [
     "#00BCD4",
     "#607D8B",
 ]
+
+DEFAULT_MARKER_STYLE = {
+    "fill": "#DC143C",
+    "border": "#FFFFFFFF",
+    "border_enabled": True,
+    "size": 28,
+    "font_ratio": 0.7,
+    "next_number": 1,
+}
+
+DEFAULT_RECT_STYLE = {
+    "fill": "#00000000",
+    "border": "#FF7043",
+    "border_enabled": True,
+    "width": 3,
+    "radius": 8,
+}
 
 
 def load_config():
@@ -723,39 +739,47 @@ class AnnotationCanvas(QWidget):
     optionsUpdated = pyqtSignal()
 
     HANDLE_SIZE = 12
+    MIN_RECT_SIZE = 8
 
     def __init__(self, pixmap: QPixmap):
         super().__init__()
         self.base_pixmap = pixmap
         self.setFixedSize(self.base_pixmap.size())
+        self.setMouseTracking(True)
         self.rectangles = []
         self.markers = []
         self.tool = Tool.NONE
-        self.marker_fill_color = QColor(220, 20, 60, 220)
-        self.marker_border_color = QColor(255, 255, 255)
-        self.marker_border_enabled = True
-        self.marker_size = 28
-        self.marker_font_ratio = 0.7
-        self.next_marker_number = 1
+        self.marker_fill_color = QColor(DEFAULT_MARKER_STYLE["fill"])
+        self.marker_border_color = QColor(DEFAULT_MARKER_STYLE["border"])
+        self.marker_border_enabled = DEFAULT_MARKER_STYLE["border_enabled"]
+        self.marker_size = DEFAULT_MARKER_STYLE["size"]
+        self.marker_font_ratio = DEFAULT_MARKER_STYLE["font_ratio"]
+        self.next_marker_number = DEFAULT_MARKER_STYLE["next_number"]
         self.dragging_marker_index = None
         self.selected_marker_index = None
         self.markers_flattened = True
-        self.rectangle_fill_color = QColor(0, 0, 0, 0)
-        self.rectangle_border_color = QColor('#FF7043')
-        self.rectangle_border_enabled = True
-        self.rectangle_border_width = 3
-        self.rectangle_corner_radius = 8
+        self.rectangle_fill_color = QColor(DEFAULT_RECT_STYLE["fill"])
+        self.rectangle_border_color = QColor(DEFAULT_RECT_STYLE["border"])
+        self.rectangle_border_enabled = DEFAULT_RECT_STYLE["border_enabled"]
+        self.rectangle_border_width = DEFAULT_RECT_STYLE["width"]
+        self.rectangle_corner_radius = DEFAULT_RECT_STYLE["radius"]
         self.rectangles_flattened = True
         self.selected_rectangle_index = None
         self.rect_drag_mode = None
         self.rect_drag_handle = None
         self.rect_initial_rect = QRect()
         self.rect_drag_origin = QPoint()
+        self.creating_new_rect = False
 
     def set_tool(self, tool: Tool):
         self.tool = tool
         self._reset_rect_drag()
-        self.setCursor(Qt.CrossCursor if tool != Tool.NONE else Qt.ArrowCursor)
+        if tool == Tool.MARKER:
+            self._update_cursor(Qt.CrossCursor)
+        elif tool == Tool.RECTANGLE:
+            self._update_cursor(Qt.ArrowCursor)
+        else:
+            self._update_cursor(Qt.ArrowCursor)
 
     def clear_annotations(self):
         self.rectangles.clear()
@@ -900,11 +924,60 @@ class AnnotationCanvas(QWidget):
             info = dict(self.rectangles[self.selected_rectangle_index])
             info['rect'] = info['rect'].translated(12, 12)
             info['flattened'] = False
-            self.rectangles.append(info)
-            self.selected_rectangle_index = len(self.rectangles) - 1
-            self.rectangles_flattened = False
+        self.rectangles.append(info)
+        self.selected_rectangle_index = len(self.rectangles) - 1
+        self.rectangles_flattened = False
+        self.update()
+        self.optionsUpdated.emit()
+
+    def apply_style_defaults(self, marker_style, rect_style):
+        if marker_style:
+            self.marker_fill_color = QColor(marker_style.get("fill", DEFAULT_MARKER_STYLE["fill"]))
+            self.marker_border_color = QColor(marker_style.get("border", DEFAULT_MARKER_STYLE["border"]))
+            self.marker_border_enabled = marker_style.get("border_enabled", DEFAULT_MARKER_STYLE["border_enabled"])
+            self.marker_size = marker_style.get("size", DEFAULT_MARKER_STYLE["size"])
+            self.marker_font_ratio = marker_style.get("font_ratio", DEFAULT_MARKER_STYLE["font_ratio"])
+            self.next_marker_number = marker_style.get("next_number", DEFAULT_MARKER_STYLE["next_number"])
+        if rect_style:
+            self.rectangle_fill_color = QColor(rect_style.get("fill", DEFAULT_RECT_STYLE["fill"]))
+            self.rectangle_border_color = QColor(rect_style.get("border", DEFAULT_RECT_STYLE["border"]))
+            self.rectangle_border_enabled = rect_style.get("border_enabled", DEFAULT_RECT_STYLE["border_enabled"])
+            self.rectangle_border_width = rect_style.get("width", DEFAULT_RECT_STYLE["width"])
+            self.rectangle_corner_radius = rect_style.get("radius", DEFAULT_RECT_STYLE["radius"])
+
+    def marker_style_state(self):
+        return {
+            "fill": self.marker_fill_color.name(QColor.HexArgb),
+            "border": self.marker_border_color.name(QColor.HexArgb),
+            "border_enabled": self.marker_border_enabled,
+            "size": self.marker_size,
+            "font_ratio": self.marker_font_ratio,
+            "next_number": self.next_marker_number,
+        }
+
+    def rectangle_style_state(self):
+        return {
+            "fill": self.rectangle_fill_color.name(QColor.HexArgb),
+            "border": self.rectangle_border_color.name(QColor.HexArgb),
+            "border_enabled": self.rectangle_border_enabled,
+            "width": self.rectangle_border_width,
+            "radius": self.rectangle_corner_radius,
+        }
+
+    def delete_selected_shape(self):
+        if self._has_active_marker():
+            self.markers.pop(self.selected_marker_index)
+            self.selected_marker_index = None
             self.update()
             self.optionsUpdated.emit()
+            return True
+        if self._has_active_rectangle():
+            self.rectangles.pop(self.selected_rectangle_index)
+            self.selected_rectangle_index = None
+            self.update()
+            self.optionsUpdated.emit()
+            return True
+        return False
 
     def flatten_all_annotations(self):
         self.markers_flattened = True
@@ -938,6 +1011,7 @@ class AnnotationCanvas(QWidget):
         self.rect_drag_handle = None
         self.rect_initial_rect = QRect()
         self.rect_drag_origin = QPoint()
+        self.creating_new_rect = False
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
@@ -966,6 +1040,8 @@ class AnnotationCanvas(QWidget):
             if rect.width() > 4 and rect.height() > 4:
                 info['rect'] = rect
             self.update()
+        else:
+            self._update_hover_cursor(event.pos())
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
@@ -974,7 +1050,19 @@ class AnnotationCanvas(QWidget):
             self.dragging_marker_index = None
             self.update()
         if self.tool == Tool.RECTANGLE:
+            if (
+                self.creating_new_rect
+                and self.selected_rectangle_index is not None
+                and self.selected_rectangle_index < len(self.rectangles)
+            ):
+                rect = self.rectangles[self.selected_rectangle_index]['rect']
+                if rect.width() < self.MIN_RECT_SIZE or rect.height() < self.MIN_RECT_SIZE:
+                    self.rectangles.pop(self.selected_rectangle_index)
+                    self.selected_rectangle_index = None
+                    self.update()
+                    self.optionsUpdated.emit()
             self._reset_rect_drag()
+            self._update_cursor(Qt.ArrowCursor)
 
     def _handle_marker_press(self, event):
         idx = self._marker_hit_test(event.pos())
@@ -1010,6 +1098,11 @@ class AnnotationCanvas(QWidget):
             self.rect_drag_origin = event.pos()
             self.rectangles_flattened = False
             self.optionsUpdated.emit()
+            self.creating_new_rect = False
+            if handle in ("top-left", "bottom-right"):
+                self._update_cursor(Qt.SizeFDiagCursor)
+            else:
+                self._update_cursor(Qt.SizeBDiagCursor)
             return
         idx = self._rect_hit_test(event.pos())
         if idx is not None:
@@ -1019,6 +1112,8 @@ class AnnotationCanvas(QWidget):
             self.rect_drag_origin = event.pos()
             self.rectangles_flattened = False
             self.optionsUpdated.emit()
+            self.creating_new_rect = False
+            self._update_cursor(Qt.SizeAllCursor)
             return
         rect_info = {
             'rect': QRect(event.pos(), event.pos()),
@@ -1037,6 +1132,8 @@ class AnnotationCanvas(QWidget):
         self.rect_drag_origin = event.pos()
         self.rectangles_flattened = False
         self.optionsUpdated.emit()
+        self.creating_new_rect = True
+        self._update_cursor(Qt.SizeFDiagCursor)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1170,12 +1267,34 @@ class AnnotationCanvas(QWidget):
                 rect.setBottom(rect.top() + size)
         return rect
 
+    def _update_hover_cursor(self, pos: QPoint):
+        if self.tool != Tool.RECTANGLE:
+            self._update_cursor(Qt.CrossCursor if self.tool == Tool.MARKER else Qt.ArrowCursor)
+            return
+        idx, handle = self._rect_handle_hit_test(pos)
+        if idx is not None and handle:
+            if handle in ("top-left", "bottom-right"):
+                self._update_cursor(Qt.SizeFDiagCursor)
+            else:
+                self._update_cursor(Qt.SizeBDiagCursor)
+            return
+        if self._rect_hit_test(pos) is not None:
+            self._update_cursor(Qt.SizeAllCursor)
+        else:
+            self._update_cursor(Qt.ArrowCursor)
+
+    def _update_cursor(self, cursor_shape):
+        self.setCursor(cursor_shape if self.tool != Tool.NONE else Qt.ArrowCursor)
+
 class AnnotationTab(QWidget):
-    def __init__(self, pixmap: QPixmap, save_dir: str):
+    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback):
         super().__init__()
         self.canvas = AnnotationCanvas(pixmap)
+        self.canvas.apply_style_defaults(style_state.get("marker"), style_state.get("rectangle"))
         self.save_dir = save_dir
         self.auto_saved_path = self._auto_save_pixmap(pixmap)
+        self.style_state = style_state
+        self.style_callback = style_callback
         self.base_status_text = f"自动保存: {self.auto_saved_path}"
         self.dirty = False
         layout = QVBoxLayout()
@@ -1193,6 +1312,10 @@ class AnnotationTab(QWidget):
         clear_action = QAction("清除标注", self)
         clear_action.triggered.connect(self.canvas.clear_annotations)
         toolbar.addAction(clear_action)
+
+        delete_action = QAction("删除选中", self)
+        delete_action.triggered.connect(self._delete_selected)
+        toolbar.addAction(delete_action)
 
         save_action = QAction("保存标注图", self)
         save_action.triggered.connect(self.save_annotated_image)
@@ -1216,11 +1339,14 @@ class AnnotationTab(QWidget):
         layout.addWidget(self.status_label)
         self.setLayout(layout)
         self.canvas.optionsUpdated.connect(self._mark_dirty)
+        self._persist_style_defaults()
 
         self.undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
         self.undo_shortcut.activated.connect(self._undo_last_action)
         self.copy_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
         self.copy_shortcut.activated.connect(self._copy_to_clipboard)
+        self.delete_shortcut = QShortcut(QKeySequence("Delete"), self)
+        self.delete_shortcut.activated.connect(self._delete_selected)
 
     def _auto_save_pixmap(self, pixmap: QPixmap):
         os.makedirs(self.save_dir, exist_ok=True)
@@ -1232,8 +1358,7 @@ class AnnotationTab(QWidget):
 
     def save_annotated_image(self):
         if self.canvas.markers and not self.canvas.markers_flattened:
-            QMessageBox.warning(self, "请先平化顺序标记", "顺序标记平化后才能保存带标注的图像。")
-            return False
+            self.canvas.flatten_all_annotations()
         annotated = self.canvas.export_pixmap()
         base, ext = os.path.splitext(os.path.basename(self.auto_saved_path))
         annotated_path = os.path.join(self.save_dir, f"{base}_annotated{ext}")
@@ -1252,6 +1377,7 @@ class AnnotationTab(QWidget):
     def _mark_dirty(self):
         self.dirty = True
         self.status_label.setText(f"{self.base_status_text} *未保存")
+        self._persist_style_defaults()
 
     def _undo_last_action(self):
         if self.canvas.undo_last_shape():
@@ -1266,6 +1392,21 @@ class AnnotationTab(QWidget):
         QApplication.clipboard().setPixmap(pix)
         self.status_label.setText("已平化并复制到剪贴板")
         self._mark_dirty()
+
+    def _delete_selected(self):
+        if self.canvas.delete_selected_shape():
+            self.status_label.setText("已删除当前选择")
+            self._mark_dirty()
+        else:
+            QApplication.beep()
+
+    def _persist_style_defaults(self):
+        if not self.style_callback:
+            return
+        marker_style = self.canvas.marker_style_state()
+        rect_style = self.canvas.rectangle_style_state()
+        self.style_callback("marker", marker_style)
+        self.style_callback("rectangle", rect_style)
 
     def maybe_close(self):
         if not self.dirty:
@@ -1519,9 +1660,11 @@ class RectangleOptionsPanel(QFrame):
         self.sync_from_canvas()
 
 class AnnotationWorkspacePage(QWidget):
-    def __init__(self, open_settings_callback):
+    def __init__(self, open_settings_callback, style_state, style_callback):
         super().__init__()
         self._open_settings_callback = open_settings_callback
+        self._style_state = style_state
+        self._style_callback = style_callback
         layout = QVBoxLayout()
 
         toolbar = QToolBar()
@@ -1551,7 +1694,7 @@ class AnnotationWorkspacePage(QWidget):
         self.tabs.setVisible(has_tabs)
 
     def add_capture(self, pixmap: QPixmap, save_dir: str):
-        tab = AnnotationTab(pixmap, save_dir)
+        tab = AnnotationTab(pixmap, save_dir, self._style_state, self._style_callback)
         label = os.path.basename(tab.auto_saved_path)
         self.tabs.addTab(tab, label)
         self.tabs.setCurrentWidget(tab)
@@ -1651,7 +1794,17 @@ class ScreenSnapApp(QMainWindow):
         self.setWindowIcon(get_app_icon())
         self.config = load_config()
         self.current_overlay = None
-        self.workspace_page = AnnotationWorkspacePage(lambda: self._open_settings_dialog())
+        self.marker_style = self.config.get("marker_style", DEFAULT_MARKER_STYLE.copy())
+        self.rectangle_style = self.config.get("rectangle_style", DEFAULT_RECT_STYLE.copy())
+        self.config.setdefault("marker_style", self.marker_style)
+        self.config.setdefault("rectangle_style", self.rectangle_style)
+        save_config(self.config)
+
+        self.workspace_page = AnnotationWorkspacePage(
+            lambda: self._open_settings_dialog(),
+            {"marker": self.marker_style, "rectangle": self.rectangle_style},
+            self._on_style_changed,
+        )
         self._hotkey_manager = GlobalHotkeyManager(self)
         self._last_selection_rect = None
         self._save_dir = self.config.get("save_dir", DEFAULT_SAVE_DIR)
@@ -1815,6 +1968,15 @@ class ScreenSnapApp(QMainWindow):
             save_config(self.config)
             self._register_all_hotkeys()
             self._update_hotkey_summary()
+
+    def _on_style_changed(self, style_type, data):
+        if style_type == "marker":
+            self.marker_style.update(data)
+            self.config["marker_style"] = self.marker_style
+        elif style_type == "rectangle":
+            self.rectangle_style.update(data)
+            self.config["rectangle_style"] = self.rectangle_style
+        save_config(self.config)
 
     def _register_all_hotkeys(self):
         self._hotkey_manager.unregister_all()
