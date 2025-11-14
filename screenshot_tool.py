@@ -1980,6 +1980,7 @@ class CaptureOverlay(QWidget):
         self.move(0, 0)
         self.selection = None
         self.origin = None
+        self.cursor_pos = None
         self.setAttribute(Qt.WA_TranslucentBackground)
 
     def paintEvent(self, event):
@@ -1995,16 +1996,19 @@ class CaptureOverlay(QWidget):
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
             painter.setPen(QPen(QColor(30, 144, 255), 2))
             painter.drawRect(self.selection)
+        self._draw_magnifier(painter)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.origin = event.pos()
             self.selection = QRect(self.origin, self.origin)
+            self.cursor_pos = event.pos()
             self.update()
 
     def mouseMoveEvent(self, event):
         if self.origin:
             self.selection = QRect(self.origin, event.pos()).normalized()
+            self.cursor_pos = event.pos()
             self.update()
 
     def mouseReleaseEvent(self, event):
@@ -2019,6 +2023,39 @@ class CaptureOverlay(QWidget):
         if event.key() == Qt.Key_Escape:
             self.canceled.emit()
             self.close()
+
+    def _draw_magnifier(self, painter: QPainter):
+        if self.cursor_pos is None:
+            return
+        src_half = 24
+        size = QSize(src_half * 2, src_half * 2)
+        x = max(src_half, min(self.cursor_pos.x(), self.screenshot.width() - src_half - 1))
+        y = max(src_half, min(self.cursor_pos.y(), self.screenshot.height() - src_half - 1))
+        source_rect = QRect(QPoint(x - src_half, y - src_half), size)
+        snippet = self.screenshot.copy(source_rect)
+        zoom = 6
+        dest_size = QSize(size.width() * zoom, size.height() * zoom)
+        magnified = snippet.scaled(dest_size, Qt.KeepAspectRatio, Qt.FastTransformation)
+
+        margin = 20
+        dest_top_left = QPoint(self.cursor_pos.x() + margin, self.cursor_pos.y() + margin)
+        if dest_top_left.x() + dest_size.width() > self.width():
+            dest_top_left.setX(self.cursor_pos.x() - margin - dest_size.width())
+        if dest_top_left.y() + dest_size.height() > self.height():
+            dest_top_left.setY(self.cursor_pos.y() - margin - dest_size.height())
+        dest_rect = QRect(dest_top_left, dest_size)
+
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.fillRect(dest_rect.adjusted(-4, -4, 4, 4), QColor(0, 0, 0, 180))
+        painter.drawPixmap(dest_rect, magnified)
+        painter.setPen(QPen(QColor(255, 255, 255), 2))
+        painter.drawRect(dest_rect)
+
+        center_x = dest_rect.center().x()
+        center_y = dest_rect.center().y()
+        painter.setPen(QPen(QColor(255, 100, 100), 1, Qt.DashLine))
+        painter.drawLine(center_x, dest_rect.top(), center_x, dest_rect.bottom())
+        painter.drawLine(dest_rect.left(), center_y, dest_rect.right(), center_y)
 
 
 class ScreenSnapApp(QMainWindow):
