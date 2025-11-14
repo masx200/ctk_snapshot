@@ -716,6 +716,7 @@ class HomePage(QWidget):
     repeatRequested = pyqtSignal()
     openSettingsRequested = pyqtSignal()
     openWorkspaceRequested = pyqtSignal()
+    openImagesRequested = pyqtSignal()
 
     def __init__(self, save_dir):
         super().__init__()
@@ -752,8 +753,7 @@ class HomePage(QWidget):
         new_task_label = QLabel("新任务")
         new_task_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         new_task_layout.addWidget(new_task_label)
-        new_task_layout.addWidget(ActionButton("新建", "创建空白图像 (规划中)", enabled=False))
-        new_task_layout.addWidget(ActionButton("打开", "打开已有文件 (规划中)", enabled=False))
+        new_task_layout.addWidget(ActionButton("导入图片", "选择已有文件开始标注", self.openImagesRequested.emit))
         new_task_layout.addStretch()
         content_layout.addLayout(new_task_layout, 1)
 
@@ -764,14 +764,11 @@ class HomePage(QWidget):
         capture_layout.addWidget(ActionButton("区域截图", "选择屏幕区域", self.captureRequested.emit))
         self.repeat_button = ActionButton("重复上次截取", "使用上一次选择的矩形区域", self.repeatRequested.emit, enabled=False)
         capture_layout.addWidget(self.repeat_button)
-        capture_layout.addWidget(ActionButton("全屏截取", "敬请期待", enabled=False))
-        capture_layout.addWidget(ActionButton("窗口截取", "敬请期待", enabled=False))
-        capture_layout.addWidget(ActionButton("滚动截取", "敬请期待", enabled=False))
         capture_layout.addStretch()
         content_layout.addLayout(capture_layout, 1)
 
         tools_layout = QVBoxLayout()
-        tools_label = QLabel("实用工具")
+        tools_label = QLabel("标注管理")
         tools_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         tools_layout.addWidget(tools_label)
         tools_layout.addWidget(ActionButton("系统设置", "热键、自定义流程", self.openSettingsRequested.emit))
@@ -780,16 +777,12 @@ class HomePage(QWidget):
         self.hotkey_summary_label.setWordWrap(True)
         self.hotkey_summary_label.setStyleSheet("color: #5f6b7c; font-size: 12px;")
         tools_layout.addWidget(self.hotkey_summary_label)
-        tools_layout.addWidget(ActionButton("颜色拾取器", "敬请期待", enabled=False))
-        tools_layout.addWidget(ActionButton("放大镜", "敬请期待", enabled=False))
-        tools_layout.addWidget(ActionButton("量角器", "敬请期待", enabled=False))
         tools_layout.addStretch()
         content_layout.addLayout(tools_layout, 1)
 
         layout.addLayout(content_layout)
         layout.addStretch()
         self.setLayout(layout)
-
     def set_save_dir(self, path):
         self._save_dir = path
         self.path_display.setText(path)
@@ -1458,17 +1451,26 @@ class AnnotationCanvas(QWidget):
         self.setCursor(cursor_shape)
 
 class AnnotationTab(QWidget):
-    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback, image_quality):
+    dirtyStateChanged = pyqtSignal(bool)
+    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback, image_quality, source_path=None):
         super().__init__()
         self.image_quality = self._clamp_quality(image_quality)
         self.canvas = AnnotationCanvas(pixmap)
         self.canvas.apply_style_defaults(style_state.get("marker"), style_state.get("rectangle"))
         self.save_dir = save_dir
-        self.auto_saved_path = self._auto_save_pixmap(pixmap)
+        if source_path:
+            self.auto_saved_path = source_path
+            self._external_source = True
+        else:
+            self.auto_saved_path = self._auto_save_pixmap(pixmap)
+            self._external_source = False
         self.style_state = style_state
         self.style_callback = style_callback
         self._current_tool = Tool.NONE
-        self.base_status_text = f"自动保存: {self.auto_saved_path}"
+        if self._external_source:
+            self.base_status_text = f"原始文件: {self.auto_saved_path}"
+        else:
+            self.base_status_text = f"自动保存: {self.auto_saved_path}"
         self.dirty = False
         layout = QVBoxLayout()
 
@@ -1517,7 +1519,7 @@ class AnnotationTab(QWidget):
         scroll.setWidget(self.canvas)
         layout.addWidget(scroll, 1)
 
-        self.status_label = QLabel(f"自动保存: {self.auto_saved_path}")
+        self.status_label = QLabel(self.base_status_text)
         layout.addWidget(self.status_label)
         self.setLayout(layout)
         self.canvas.optionsUpdated.connect(self._handle_canvas_update)
@@ -1559,7 +1561,7 @@ class AnnotationTab(QWidget):
         annotated_path = os.path.join(self.save_dir, f"{base}_annotated.jpg")
         if annotated.save(annotated_path, "JPG", self.image_quality):
             self.status_label.setText(f"标注图已保存: {annotated_path}")
-            self.dirty = False
+            self._set_dirty(False)
             return True
         QMessageBox.warning(self, "保存失败", "无法写入标注截图，请检查保存路径。")
         return False
@@ -1594,9 +1596,15 @@ class AnnotationTab(QWidget):
             self.panel_stack.setCurrentWidget(self._options_placeholder)
 
     def _mark_dirty(self):
-        self.dirty = True
         self.status_label.setText(f"{self.base_status_text} *未保存")
         self._persist_style_defaults()
+        self._set_dirty(True)
+
+    def _set_dirty(self, dirty):
+        if self.dirty != dirty:
+            self.dirty = dirty
+            self.dirtyStateChanged.emit(self.dirty)
+
 
     def _undo_last_action(self):
         if self.canvas.undo_last_shape():
@@ -1879,9 +1887,10 @@ class RectangleOptionsPanel(QFrame):
         self.sync_from_canvas()
 
 class AnnotationWorkspacePage(QWidget):
-    def __init__(self, open_settings_callback, style_state, style_callback, image_quality):
+    def __init__(self, open_settings_callback, open_images_callback, style_state, style_callback, image_quality):
         super().__init__()
         self._open_settings_callback = open_settings_callback
+        self._open_images_callback = open_images_callback
         self._style_state = style_state
         self._style_callback = style_callback
         self._image_quality = self._clamp_quality(image_quality)
@@ -1889,6 +1898,9 @@ class AnnotationWorkspacePage(QWidget):
 
         toolbar = QToolBar()
         toolbar.setIconSize(QSize(18, 18))
+        import_action = QAction("导入图片", self)
+        import_action.triggered.connect(self._open_images_callback)
+        toolbar.addAction(import_action)
         settings_action = QAction("系统设置", self)
         settings_action.triggered.connect(self._open_settings_callback)
         toolbar.addAction(settings_action)
@@ -1914,11 +1926,27 @@ class AnnotationWorkspacePage(QWidget):
         self.tabs.setVisible(has_tabs)
 
     def add_capture(self, pixmap: QPixmap, save_dir: str):
-        tab = AnnotationTab(pixmap, save_dir, self._style_state, self._style_callback, self._image_quality)
-        label = os.path.basename(tab.auto_saved_path)
-        self.tabs.addTab(tab, label)
-        self.tabs.setCurrentWidget(tab)
-        self._update_hint_visibility()
+        self._create_tab(pixmap, save_dir)
+
+    def open_image_files(self, file_paths):
+        invalid = []
+        created = False
+        for path in file_paths:
+            if not path or not os.path.exists(path):
+                invalid.append(path)
+                continue
+            pixmap = QPixmap(path)
+            if pixmap.isNull():
+                invalid.append(path)
+                continue
+            save_dir = os.path.dirname(path) or DEFAULT_SAVE_DIR
+            self._create_tab(pixmap, save_dir, source_path=path)
+            created = True
+        if invalid:
+            msg = "\n".join(path for path in invalid if path)
+            QMessageBox.warning(self, "无法打开图片", f"以下文件无法加载为图片：\n{msg}")
+        if created:
+            self._update_hint_visibility()
 
     def _close_tab(self, index):
         widget = self.tabs.widget(index)
@@ -1950,6 +1978,26 @@ class AnnotationWorkspacePage(QWidget):
                 if tab and not tab.save_annotated_image():
                     return False
         return True
+
+    def _create_tab(self, pixmap, save_dir, source_path=None):
+        tab = AnnotationTab(pixmap, save_dir, self._style_state, self._style_callback, self._image_quality, source_path=source_path)
+        label_path = source_path or tab.auto_saved_path
+        label = os.path.basename(label_path)
+        self.tabs.addTab(tab, label)
+        self._bind_tab_signals(tab)
+        self.tabs.setCurrentWidget(tab)
+        self._update_hint_visibility()
+
+    def _bind_tab_signals(self, tab):
+        tab.dirtyStateChanged.connect(lambda dirty, t=tab: self._update_tab_color(t, dirty))
+        self._update_tab_color(tab, tab.dirty)
+
+    def _update_tab_color(self, tab, dirty):
+        index = self.tabs.indexOf(tab)
+        if index == -1:
+            return
+        color = QColor("#f97316") if dirty else QColor("#0f172a")
+        self.tabs.tabBar().setTabTextColor(index, color)
 
     def set_image_quality(self, value):
         self._image_quality = self._clamp_quality(value)
@@ -2075,6 +2123,7 @@ class ScreenSnapApp(QMainWindow):
 
         self.workspace_page = AnnotationWorkspacePage(
             lambda: self._open_settings_dialog(),
+            self._open_images_dialog,
             {"marker": self.marker_style, "rectangle": self.rectangle_style},
             self._on_style_changed,
             self._image_quality,
@@ -2132,6 +2181,7 @@ class ScreenSnapApp(QMainWindow):
         self.home_page.openFolderRequested.connect(self._open_save_folder)
         self.home_page.captureRequested.connect(self.initiate_capture)
         self.home_page.repeatRequested.connect(self._repeat_capture)
+        self.home_page.openImagesRequested.connect(self._open_images_dialog)
         self.home_page.openSettingsRequested.connect(self._open_settings_dialog)
         self.home_page.openWorkspaceRequested.connect(self._open_workspace)
         self._current_page = "home"
@@ -2171,6 +2221,14 @@ class ScreenSnapApp(QMainWindow):
 
     def _open_workspace(self):
         self._switch_page("edit")
+
+    def _open_images_dialog(self):
+        filters = "图片文件 (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;所有文件 (*)"
+        files, _ = QFileDialog.getOpenFileNames(self, "选择图片文件", self._save_dir, filters)
+        if not files:
+            return
+        self.workspace_page.open_image_files(files)
+        self._focus_workspace()
 
     def _focus_workspace(self):
         self._switch_page("edit")
