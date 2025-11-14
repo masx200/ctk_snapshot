@@ -1546,18 +1546,18 @@ class AnnotationTab(QWidget):
     def _auto_save_pixmap(self, pixmap: QPixmap):
         os.makedirs(self.save_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshot_{timestamp}.png"
+        filename = f"screenshot_{timestamp}.jpg"
         path = os.path.join(self.save_dir, filename)
-        pixmap.save(path, "PNG", self.image_quality)
+        pixmap.save(path, "JPG", self.image_quality)
         return path
 
     def save_annotated_image(self):
         if self.canvas.markers and not self.canvas.markers_flattened:
             self.canvas.flatten_all_annotations()
         annotated = self.canvas.export_pixmap()
-        base, ext = os.path.splitext(os.path.basename(self.auto_saved_path))
-        annotated_path = os.path.join(self.save_dir, f"{base}_annotated{ext}")
-        if annotated.save(annotated_path, "PNG", self.image_quality):
+        base, _ = os.path.splitext(os.path.basename(self.auto_saved_path))
+        annotated_path = os.path.join(self.save_dir, f"{base}_annotated.jpg")
+        if annotated.save(annotated_path, "JPG", self.image_quality):
             self.status_label.setText(f"标注图已保存: {annotated_path}")
             self.dirty = False
             return True
@@ -2172,6 +2172,7 @@ class ScreenSnapApp(QMainWindow):
         self.workspace_page.add_capture(pixmap, self._save_dir)
         self.home_page.set_repeat_enabled(True)
         self._focus_workspace()
+        self._resize_for_image(pixmap.size())
 
     def _hotkey_display_text(self, action_id):
         hotkey_info = self.config.get("hotkeys", {}).get(action_id, {})
@@ -2288,6 +2289,7 @@ class ScreenSnapApp(QMainWindow):
         cropped = screenshot.copy(rect)
         self.workspace_page.add_capture(cropped, self._save_dir)
         self._focus_workspace()
+        self._resize_for_image(cropped.size())
 
     def closeEvent(self, event):
         if not self.workspace_page.maybe_close_all():
@@ -2296,20 +2298,32 @@ class ScreenSnapApp(QMainWindow):
         self._teardown_hotkeys()
         super().closeEvent(event)
 
+    def _resize_for_image(self, image_size: QSize):
+        screen = QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        margin_w, margin_h = 360, 300
+        min_w, min_h = 1000, 700
+        target_w = max(min_w, image_size.width() + margin_w)
+        target_h = max(min_h, image_size.height() + margin_h)
+        if available:
+            target_w = min(target_w, available.width())
+            target_h = min(target_h, available.height())
+        self.resize(target_w, target_h)
+
 
 def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(
         """
-        QWidget { font-size: 16px; }
-        QPushButton { font-size: 16px; }
-        QListWidget { font-size: 16px; }
-        QTabBar::tab { font-size: 15px; height: 38px; }
-        QToolBar { font-size: 15px; }
+        QWidget { font-size: 18px; }
+        QPushButton { font-size: 18px; }
+        QListWidget { font-size: 18px; }
+        QTabBar::tab { font-size: 17px; height: 42px; }
+        QToolBar { font-size: 17px; }
         """
     )
     base_font = QFont()
-    base_font.setPointSize(11)
+    base_font.setPointSize(12)
     app.setFont(base_font)
     app.setWindowIcon(get_app_icon())
     window = ScreenSnapApp()
