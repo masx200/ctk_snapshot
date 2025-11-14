@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QDoubleSpinBox,
+    QSlider,
     QShortcut,
     QListWidget,
     QTabWidget,
@@ -78,6 +79,8 @@ DEFAULT_RECT_STYLE = {
     "width": 3,
     "radius": 8,
 }
+
+DEFAULT_IMAGE_QUALITY = 95
 
 
 def load_config():
@@ -551,13 +554,82 @@ class HotkeySettingsPage(QWidget):
         return {k: v for k, v in self._working_hotkeys.items() if v.get("shortcut")}
 
 
+class QualitySettingsPage(QWidget):
+    def __init__(self, quality, parent=None):
+        super().__init__(parent)
+        self._quality = self._clamp_quality(quality if quality is not None else DEFAULT_IMAGE_QUALITY)
+        layout = QVBoxLayout()
+
+        title = QLabel("控制导出的截图品质")
+        title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        layout.addWidget(title)
+
+        desc = QLabel("拖动滑块或直接输入百分比，决定保存 PNG/JPG 时使用的图像质量。数值越大，画质越高、文件也越大。")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #4a4a4a;")
+        layout.addWidget(desc)
+
+        slider_row = QHBoxLayout()
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(10, 100)
+        self.slider.setSingleStep(1)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        slider_row.addWidget(self.slider, 1)
+
+        self.spin = QSpinBox()
+        self.spin.setRange(10, 100)
+        self.spin.setSuffix("%")
+        self.spin.valueChanged.connect(self._on_spin_changed)
+        slider_row.addSpacing(12)
+        slider_row.addWidget(self.spin)
+        layout.addLayout(slider_row)
+
+        self.summary = QLabel()
+        self.summary.setStyleSheet("color: #5c6470;")
+        layout.addSpacing(12)
+        layout.addWidget(self.summary)
+        layout.addStretch()
+        self.setLayout(layout)
+
+        self._sync_controls(self._quality)
+
+    def _clamp_quality(self, value):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = DEFAULT_IMAGE_QUALITY
+        return max(10, min(100, value))
+
+    def _sync_controls(self, value):
+        self.slider.blockSignals(True)
+        self.spin.blockSignals(True)
+        self.slider.setValue(value)
+        self.spin.setValue(value)
+        self.slider.blockSignals(False)
+        self.spin.blockSignals(False)
+        self.summary.setText(f"当前质量：{value}%。推荐 80-95 之间兼顾画质与体积。")
+
+    def _on_slider_changed(self, value):
+        value = self._clamp_quality(value)
+        self._quality = value
+        self._sync_controls(value)
+
+    def _on_spin_changed(self, value):
+        value = self._clamp_quality(value)
+        self._quality = value
+        self._sync_controls(value)
+
+    def get_quality(self):
+        return self._quality
+
 class SettingsDialog(QDialog):
     def __init__(self, parent, config):
         super().__init__(parent)
         self.setWindowTitle("系统设置")
         self.setWindowIcon(get_app_icon())
-        self.resize(880, 560)
+        self.resize(900, 600)
         self._hotkey_result = config.get("hotkeys", {}).copy()
+        self._quality_value = int(config.get("image_quality", DEFAULT_IMAGE_QUALITY))
         layout = QVBoxLayout()
 
         header = QLabel("配置中心")
@@ -568,10 +640,12 @@ class SettingsDialog(QDialog):
         self.nav_list = QListWidget()
         self.nav_list.addItem("常规")
         self.nav_list.addItem("快捷键")
-        self.nav_list.setFixedWidth(150)
+        self.nav_list.addItem("质量")
+        self.nav_list.setFixedWidth(170)
         self.nav_list.setStyleSheet(
-            "QListWidget { border: 1px solid #e0e0e0; } QListWidget::item { padding: 10px; } "
-            "QListWidget::item:selected { background: #eef4ff; }"
+            "QListWidget { border: 1px solid #e0e0e0; } "
+            "QListWidget::item { padding: 12px; color: #1f2330; } "
+            "QListWidget::item:selected { background: #eef4ff; color: #0c1d37; font-weight: 600; }"
         )
         content_layout.addWidget(self.nav_list)
 
@@ -583,8 +657,10 @@ class SettingsDialog(QDialog):
         self.stack = QStackedWidget()
         self.general_page = GeneralSettingsPage()
         self.hotkey_page = HotkeySettingsPage(config.get("hotkeys", {}))
+        self.quality_page = QualitySettingsPage(self._quality_value)
         self.stack.addWidget(self.general_page)
         self.stack.addWidget(self.hotkey_page)
+        self.stack.addWidget(self.quality_page)
         content_layout.addWidget(self.stack, 1)
 
         layout.addLayout(content_layout)
@@ -606,11 +682,14 @@ class SettingsDialog(QDialog):
 
     def accept(self):
         self._hotkey_result = self.hotkey_page.get_hotkeys()
+        self._quality_value = self.quality_page.get_quality()
         super().accept()
 
     def get_hotkeys(self):
         return self._hotkey_result
 
+    def get_image_quality(self):
+        return self._quality_value
 
 class ActionButton(QPushButton):
     def __init__(self, title, subtitle="", callback=None, enabled=True):
@@ -775,14 +854,9 @@ class AnnotationCanvas(QWidget):
     def set_tool(self, tool: Tool):
         self.tool = tool
         self._reset_rect_drag()
-        if tool == Tool.MARKER:
-            self._update_cursor(Qt.CrossCursor)
-            self.hover_marker_index = None
-        elif tool == Tool.RECTANGLE:
-            self._update_cursor(Qt.ArrowCursor)
-        else:
-            self._update_cursor(Qt.ArrowCursor)
-            self.hover_marker_index = None
+        if tool != Tool.MARKER:
+            self._set_hover_marker(None)
+        self._update_default_cursor()
 
     def clear_annotations(self):
         self.rectangles.clear()
@@ -867,6 +941,9 @@ class AnnotationCanvas(QWidget):
             self.markers.append(marker)
             self.selected_marker_index = len(self.markers) - 1
             self.dragging_marker_index = self.selected_marker_index
+            self.selected_rectangle_index = None
+            self.rect_drag_mode = None
+            self._set_hover_marker(None)
             self.markers_flattened = False
             self.update()
             self.optionsUpdated.emit()
@@ -932,6 +1009,9 @@ class AnnotationCanvas(QWidget):
             info['flattened'] = False
         self.rectangles.append(info)
         self.selected_rectangle_index = len(self.rectangles) - 1
+        self.selected_marker_index = None
+        self.dragging_marker_index = None
+        self._set_hover_marker(None)
         self.rectangles_flattened = False
         self.update()
         self.optionsUpdated.emit()
@@ -970,19 +1050,54 @@ class AnnotationCanvas(QWidget):
             "radius": self.rectangle_corner_radius,
         }
 
+    def active_selection_kind(self):
+        if self._has_active_marker():
+            return "marker"
+        if self._has_active_rectangle():
+            return "rectangle"
+        return "none"
+
+    def clear_active_selection(self, emit=True):
+        changed = False
+        if self.selected_marker_index is not None:
+            self.selected_marker_index = None
+            self.dragging_marker_index = None
+            changed = True
+        if self.selected_rectangle_index is not None:
+            self.selected_rectangle_index = None
+            self.rect_drag_mode = None
+            self.rect_drag_handle = None
+            self.rect_initial_rect = QRect()
+            self.rect_drag_origin = QPoint()
+            self.creating_new_rect = False
+            changed = True
+        if self.hover_marker_index is not None:
+            self._set_hover_marker(None)
+            changed = True
+        if changed:
+            self._update_default_cursor()
+            if emit:
+                self.optionsUpdated.emit()
+        self.update()
+        return changed
+
     def delete_selected_shape(self):
         if self._has_active_marker():
             self.markers.pop(self.selected_marker_index)
             self.selected_marker_index = None
-            self.hover_marker_index = None
+            self.dragging_marker_index = None
+            self._set_hover_marker(None)
             self.update()
             self.optionsUpdated.emit()
             return True
         if self._has_active_rectangle():
             self.rectangles.pop(self.selected_rectangle_index)
             self.selected_rectangle_index = None
+            self.rect_drag_mode = None
+            self.rect_drag_handle = None
             self.update()
             self.optionsUpdated.emit()
+            self._update_default_cursor()
             return True
         return False
 
@@ -1024,21 +1139,19 @@ class AnnotationCanvas(QWidget):
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        if self.tool == Tool.MARKER:
-            self._handle_marker_press(event)
+        if self._handle_rect_press(event, allow_creation=False, handles_only=True):
             return
-        if self.tool == Tool.RECTANGLE:
-            self._handle_rect_press(event)
+        if self._handle_marker_press(event, allow_creation=self.tool == Tool.MARKER):
+            return
+        if self._handle_rect_press(event, allow_creation=self.tool == Tool.RECTANGLE):
             return
 
     def mouseMoveEvent(self, event):
-        if self.tool == Tool.MARKER and self.dragging_marker_index is not None and not self.markers_flattened:
+        if self.dragging_marker_index is not None and not self.markers_flattened:
             self.markers[self.dragging_marker_index]['pos'] = event.pos()
             self.update()
             return
-        if self.tool == Tool.MARKER and self.dragging_marker_index is None:
-            self._update_marker_hover_cursor(event.pos())
-        if self.tool == Tool.RECTANGLE and self.selected_rectangle_index is not None and self.rect_drag_mode:
+        if self.rect_drag_mode and self.selected_rectangle_index is not None:
             info = self.rectangles[self.selected_rectangle_index]
             rect = QRect(self.rect_initial_rect)
             delta = event.pos() - self.rect_drag_origin
@@ -1050,19 +1163,18 @@ class AnnotationCanvas(QWidget):
             if rect.width() > 4 and rect.height() > 4:
                 info['rect'] = rect
             self.update()
-        else:
-            self._update_hover_cursor(event.pos())
+            return
+        self._update_pointer_feedback(event.pos())
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        if self.tool == Tool.MARKER and self.dragging_marker_index is not None:
+        if self.dragging_marker_index is not None:
             self.dragging_marker_index = None
             self.update()
-        if self.tool == Tool.RECTANGLE:
+        if self.rect_drag_mode and self.selected_rectangle_index is not None:
             if (
                 self.creating_new_rect
-                and self.selected_rectangle_index is not None
                 and self.selected_rectangle_index < len(self.rectangles)
             ):
                 rect = self.rectangles[self.selected_rectangle_index]['rect']
@@ -1072,15 +1184,20 @@ class AnnotationCanvas(QWidget):
                     self.update()
                     self.optionsUpdated.emit()
             self._reset_rect_drag()
-            self._update_cursor(Qt.ArrowCursor)
+        self._update_pointer_feedback(event.pos())
 
-    def _handle_marker_press(self, event):
+    def _handle_marker_press(self, event, allow_creation=True):
         idx = self._marker_hit_test(event.pos())
         if idx is not None and not self.markers_flattened:
             self.dragging_marker_index = idx
             self.selected_marker_index = idx
+            self.selected_rectangle_index = None
+            self.rect_drag_mode = None
+            self._set_hover_marker(None)
             self.optionsUpdated.emit()
-        else:
+            self.update()
+            return True
+        if allow_creation:
             marker = {
                 'pos': event.pos(),
                 'number': self.next_marker_number,
@@ -1092,39 +1209,54 @@ class AnnotationCanvas(QWidget):
             }
             self.markers.append(marker)
             self.selected_marker_index = len(self.markers) - 1
+            self.selected_rectangle_index = None
             self.dragging_marker_index = self.selected_marker_index
+            self.rect_drag_mode = None
             self.markers_flattened = False
+            self._set_hover_marker(None)
             self.next_marker_number += 1
             self.optionsUpdated.emit()
-        self.update()
+            self.update()
+            return True
+        return False
 
-    def _handle_rect_press(self, event):
+    def _handle_rect_press(self, event, allow_creation=True, handles_only=False):
         idx, handle = self._rect_handle_hit_test(event.pos())
         if idx is not None:
             self.selected_rectangle_index = idx
+            self.selected_marker_index = None
+            self.dragging_marker_index = None
             self.rect_drag_mode = 'resize'
             self.rect_drag_handle = handle
             self.rect_initial_rect = QRect(self.rectangles[idx]['rect'])
             self.rect_drag_origin = event.pos()
             self.rectangles_flattened = False
-            self.optionsUpdated.emit()
             self.creating_new_rect = False
+            self._set_hover_marker(None)
+            self.optionsUpdated.emit()
             if handle in ("top-left", "bottom-right"):
                 self._update_cursor(Qt.SizeFDiagCursor)
             else:
                 self._update_cursor(Qt.SizeBDiagCursor)
-            return
+            return True
+        if handles_only:
+            return False
         idx = self._rect_hit_test(event.pos())
         if idx is not None:
             self.selected_rectangle_index = idx
+            self.selected_marker_index = None
+            self.dragging_marker_index = None
             self.rect_drag_mode = 'move'
             self.rect_initial_rect = QRect(self.rectangles[idx]['rect'])
             self.rect_drag_origin = event.pos()
             self.rectangles_flattened = False
-            self.optionsUpdated.emit()
             self.creating_new_rect = False
+            self._set_hover_marker(None)
+            self.optionsUpdated.emit()
             self._update_cursor(Qt.SizeAllCursor)
-            return
+            return True
+        if not allow_creation:
+            return False
         rect_info = {
             'rect': QRect(event.pos(), event.pos()),
             'fill': QColor(self.rectangle_fill_color),
@@ -1136,14 +1268,18 @@ class AnnotationCanvas(QWidget):
         }
         self.rectangles.append(rect_info)
         self.selected_rectangle_index = len(self.rectangles) - 1
+        self.selected_marker_index = None
+        self.dragging_marker_index = None
         self.rect_drag_mode = 'resize'
         self.rect_drag_handle = 'bottom-right'
         self.rect_initial_rect = QRect(rect_info['rect'])
         self.rect_drag_origin = event.pos()
         self.rectangles_flattened = False
-        self.optionsUpdated.emit()
         self.creating_new_rect = True
+        self._set_hover_marker(None)
+        self.optionsUpdated.emit()
         self._update_cursor(Qt.SizeFDiagCursor)
+        return True
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1284,47 +1420,54 @@ class AnnotationCanvas(QWidget):
                 rect.setBottom(rect.top() + size)
         return rect
 
-    def _update_marker_hover_cursor(self, pos: QPoint):
-        if self.tool != Tool.MARKER or self.markers_flattened:
-            self.hover_marker_index = None
-            self._update_cursor(Qt.CrossCursor if self.tool == Tool.MARKER else Qt.ArrowCursor)
-            return
-        idx = self._marker_hit_test(pos)
-        if idx is not None:
+    def _set_hover_marker(self, idx):
+        if self.hover_marker_index != idx:
             self.hover_marker_index = idx
-            self._update_cursor(Qt.SizeAllCursor)
-        else:
-            self.hover_marker_index = None
-            self._update_cursor(Qt.CrossCursor)
+            self.update()
 
-    def _update_hover_cursor(self, pos: QPoint):
-        if self.tool != Tool.RECTANGLE:
-            self._update_cursor(Qt.ArrowCursor)
-            return
+    def _update_pointer_feedback(self, pos: QPoint):
         idx, handle = self._rect_handle_hit_test(pos)
         if idx is not None and handle:
+            self._set_hover_marker(None)
             if handle in ("top-left", "bottom-right"):
                 self._update_cursor(Qt.SizeFDiagCursor)
             else:
                 self._update_cursor(Qt.SizeBDiagCursor)
             return
-        if self._rect_hit_test(pos) is not None:
+        idx = self._rect_hit_test(pos)
+        if idx is not None:
+            self._set_hover_marker(None)
             self._update_cursor(Qt.SizeAllCursor)
+            return
+        if not self.markers_flattened:
+            marker_idx = self._marker_hit_test(pos)
+            if marker_idx is not None:
+                self._set_hover_marker(marker_idx)
+                self._update_cursor(Qt.SizeAllCursor)
+                return
+        self._set_hover_marker(None)
+        self._update_default_cursor()
+
+    def _update_default_cursor(self):
+        if self.tool == Tool.MARKER:
+            self._update_cursor(Qt.CrossCursor)
         else:
             self._update_cursor(Qt.ArrowCursor)
 
     def _update_cursor(self, cursor_shape):
-        self.setCursor(cursor_shape if self.tool != Tool.NONE else Qt.ArrowCursor)
+        self.setCursor(cursor_shape)
 
 class AnnotationTab(QWidget):
-    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback):
+    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback, image_quality):
         super().__init__()
+        self.image_quality = self._clamp_quality(image_quality)
         self.canvas = AnnotationCanvas(pixmap)
         self.canvas.apply_style_defaults(style_state.get("marker"), style_state.get("rectangle"))
         self.save_dir = save_dir
         self.auto_saved_path = self._auto_save_pixmap(pixmap)
         self.style_state = style_state
         self.style_callback = style_callback
+        self._current_tool = Tool.NONE
         self.base_status_text = f"自动保存: {self.auto_saved_path}"
         self.dirty = False
         layout = QVBoxLayout()
@@ -1354,12 +1497,21 @@ class AnnotationTab(QWidget):
         layout.addWidget(toolbar)
 
         self.marker_panel = MarkerOptionsPanel(self.canvas)
-        self.marker_panel.setVisible(False)
-        layout.addWidget(self.marker_panel)
-
         self.rectangle_panel = RectangleOptionsPanel(self.canvas)
-        self.rectangle_panel.setVisible(False)
-        layout.addWidget(self.rectangle_panel)
+        self._options_placeholder = QWidget()
+        self._options_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.panel_stack = QStackedWidget()
+        self.panel_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.panel_stack.addWidget(self._options_placeholder)
+        self.panel_stack.addWidget(self.marker_panel)
+        self.panel_stack.addWidget(self.rectangle_panel)
+
+        stack_height = max(self.marker_panel.sizeHint().height(), self.rectangle_panel.sizeHint().height())
+        self.panel_stack.setMinimumHeight(stack_height)
+        self._options_placeholder.setMinimumHeight(stack_height)
+
+        layout.addWidget(self.panel_stack)
 
         scroll = QScrollArea()
         scroll.setWidget(self.canvas)
@@ -1368,7 +1520,8 @@ class AnnotationTab(QWidget):
         self.status_label = QLabel(f"自动保存: {self.auto_saved_path}")
         layout.addWidget(self.status_label)
         self.setLayout(layout)
-        self.canvas.optionsUpdated.connect(self._mark_dirty)
+        self.canvas.optionsUpdated.connect(self._handle_canvas_update)
+        self._update_panel_visibility()
         self._persist_style_defaults()
 
         self.undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
@@ -1378,12 +1531,22 @@ class AnnotationTab(QWidget):
         self.delete_shortcut = QShortcut(QKeySequence("Delete"), self)
         self.delete_shortcut.activated.connect(self._delete_selected)
 
+    def _clamp_quality(self, value):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = DEFAULT_IMAGE_QUALITY
+        return max(10, min(100, value))
+
+    def set_image_quality(self, value):
+        self.image_quality = self._clamp_quality(value)
+
     def _auto_save_pixmap(self, pixmap: QPixmap):
         os.makedirs(self.save_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"screenshot_{timestamp}.png"
         path = os.path.join(self.save_dir, filename)
-        pixmap.save(path, "PNG")
+        pixmap.save(path, "PNG", self.image_quality)
         return path
 
     def save_annotated_image(self):
@@ -1392,7 +1555,7 @@ class AnnotationTab(QWidget):
         annotated = self.canvas.export_pixmap()
         base, ext = os.path.splitext(os.path.basename(self.auto_saved_path))
         annotated_path = os.path.join(self.save_dir, f"{base}_annotated{ext}")
-        if annotated.save(annotated_path, "PNG"):
+        if annotated.save(annotated_path, "PNG", self.image_quality):
             self.status_label.setText(f"标注图已保存: {annotated_path}")
             self.dirty = False
             return True
@@ -1400,9 +1563,29 @@ class AnnotationTab(QWidget):
         return False
 
     def _set_tool(self, tool: Tool):
+        self._current_tool = tool
+        self.canvas.clear_active_selection(emit=False)
         self.canvas.set_tool(tool)
-        self.marker_panel.setVisible(tool == Tool.MARKER)
-        self.rectangle_panel.setVisible(tool == Tool.RECTANGLE)
+        self._update_panel_visibility(preferred=tool)
+
+    def _handle_canvas_update(self):
+        self._mark_dirty()
+        self._update_panel_visibility()
+
+    def _update_panel_visibility(self, preferred=None):
+        kind = self.canvas.active_selection_kind()
+        if kind == "marker":
+            target = Tool.MARKER
+        elif kind == "rectangle":
+            target = Tool.RECTANGLE
+        else:
+            target = preferred or self._current_tool
+        if target == Tool.MARKER:
+            self.panel_stack.setCurrentWidget(self.marker_panel)
+        elif target == Tool.RECTANGLE:
+            self.panel_stack.setCurrentWidget(self.rectangle_panel)
+        else:
+            self.panel_stack.setCurrentWidget(self._options_placeholder)
 
     def _mark_dirty(self):
         self.dirty = True
@@ -1690,11 +1873,12 @@ class RectangleOptionsPanel(QFrame):
         self.sync_from_canvas()
 
 class AnnotationWorkspacePage(QWidget):
-    def __init__(self, open_settings_callback, style_state, style_callback):
+    def __init__(self, open_settings_callback, style_state, style_callback, image_quality):
         super().__init__()
         self._open_settings_callback = open_settings_callback
         self._style_state = style_state
         self._style_callback = style_callback
+        self._image_quality = self._clamp_quality(image_quality)
         layout = QVBoxLayout()
 
         toolbar = QToolBar()
@@ -1724,7 +1908,7 @@ class AnnotationWorkspacePage(QWidget):
         self.tabs.setVisible(has_tabs)
 
     def add_capture(self, pixmap: QPixmap, save_dir: str):
-        tab = AnnotationTab(pixmap, save_dir, self._style_state, self._style_callback)
+        tab = AnnotationTab(pixmap, save_dir, self._style_state, self._style_callback, self._image_quality)
         label = os.path.basename(tab.auto_saved_path)
         self.tabs.addTab(tab, label)
         self.tabs.setCurrentWidget(tab)
@@ -1760,6 +1944,20 @@ class AnnotationWorkspacePage(QWidget):
                 if tab and not tab.save_annotated_image():
                     return False
         return True
+
+    def set_image_quality(self, value):
+        self._image_quality = self._clamp_quality(value)
+        for idx in range(self.tabs.count()):
+            widget = self.tabs.widget(idx)
+            if hasattr(widget, "set_image_quality"):
+                widget.set_image_quality(self._image_quality)
+
+    def _clamp_quality(self, value):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = DEFAULT_IMAGE_QUALITY
+        return max(10, min(100, value))
 
 
 class CaptureOverlay(QWidget):
@@ -1824,16 +2022,19 @@ class ScreenSnapApp(QMainWindow):
         self.setWindowIcon(get_app_icon())
         self.config = load_config()
         self.current_overlay = None
+        self._image_quality = int(self.config.get("image_quality", DEFAULT_IMAGE_QUALITY))
         self.marker_style = self.config.get("marker_style", DEFAULT_MARKER_STYLE.copy())
         self.rectangle_style = self.config.get("rectangle_style", DEFAULT_RECT_STYLE.copy())
         self.config.setdefault("marker_style", self.marker_style)
         self.config.setdefault("rectangle_style", self.rectangle_style)
+        self.config.setdefault("image_quality", self._image_quality)
         save_config(self.config)
 
         self.workspace_page = AnnotationWorkspacePage(
             lambda: self._open_settings_dialog(),
             {"marker": self.marker_style, "rectangle": self.rectangle_style},
             self._on_style_changed,
+            self._image_quality,
         )
         self._hotkey_manager = GlobalHotkeyManager(self)
         self._last_selection_rect = None
@@ -1894,7 +2095,7 @@ class ScreenSnapApp(QMainWindow):
         self._update_nav_state()
 
         self.setCentralWidget(main_widget)
-        self.resize(960, 580)
+        self.resize(1360, 840)
 
         self.home_page.set_repeat_enabled(False)
         self._register_all_hotkeys()
@@ -1995,7 +2196,10 @@ class ScreenSnapApp(QMainWindow):
         dialog = SettingsDialog(parent or self, self.config)
         if dialog.exec_() == QDialog.Accepted:
             self.config["hotkeys"] = dialog.get_hotkeys()
+            self.config["image_quality"] = dialog.get_image_quality()
+            self._image_quality = int(self.config["image_quality"])
             save_config(self.config)
+            self.workspace_page.set_image_quality(self._image_quality)
             self._register_all_hotkeys()
             self._update_hotkey_summary()
 
@@ -2091,16 +2295,19 @@ def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(
         """
-        QWidget { font-size: 15px; }
-        QPushButton { font-size: 15px; }
-        QListWidget { font-size: 15px; }
-        QTabBar::tab { font-size: 14px; height: 34px; }
-        QToolBar { font-size: 14px; }
+        QWidget { font-size: 16px; }
+        QPushButton { font-size: 16px; }
+        QListWidget { font-size: 16px; }
+        QTabBar::tab { font-size: 15px; height: 38px; }
+        QToolBar { font-size: 15px; }
         """
     )
+    base_font = QFont()
+    base_font.setPointSize(11)
+    app.setFont(base_font)
     app.setWindowIcon(get_app_icon())
     window = ScreenSnapApp()
-    window.showMaximized()
+    window.show()
     sys.exit(app.exec_())
 
 

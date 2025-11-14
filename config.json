@@ -16,13 +16,14 @@
     "border_enabled": true,
     "size": 17,
     "font_ratio": 1.1500000000000001,
-    "next_number": 1
+    "next_number": 16
   },
   "rectangle_style": {
     "fill": "#00000000",
-    "border": "#ffffc107",
+    "border": "#ffff9800",
     "border_enabled": true,
     "width": 3,
-    "radius": 0
-  }
+    "radius": 8
+  },
+  "image_quality": 74
 }
