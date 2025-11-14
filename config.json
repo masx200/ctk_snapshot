@@ -12,11 +12,11 @@
   },
   "marker_style": {
     "fill": "#fff44336",
-    "border": "#ffffffff",
+    "border": "#ffffaa00",
     "border_enabled": true,
     "size": 17,
     "font_ratio": 1.1500000000000001,
-    "next_number": 7
+    "next_number": 9
   },
   "rectangle_style": {
     "fill": "#00000000",

@@ -1,5 +1,6 @@
 screenshots/
 screenshot/
+config.json
 
 # Python
 __pycache__/
