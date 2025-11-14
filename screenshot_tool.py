@@ -1,5 +1,6 @@
 import ctypes
 from ctypes import wintypes
+import copy
 import json
 import os
 import sys
@@ -7,7 +8,17 @@ from datetime import datetime
 from enum import Enum, auto
 
 from PyQt5.QtCore import QPoint, QRect, Qt, pyqtSignal, QTimer, QUrl, QSize
-from PyQt5.QtGui import QColor, QGuiApplication, QPainter, QPen, QPixmap, QFont, QIcon, QDesktopServices
+from PyQt5.QtGui import (
+    QColor,
+    QGuiApplication,
+    QPainter,
+    QPen,
+    QPixmap,
+    QFont,
+    QIcon,
+    QDesktopServices,
+    QKeySequence,
+)
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -21,6 +32,7 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QDoubleSpinBox,
+    QShortcut,
     QTabWidget,
     QStackedWidget,
     QToolBar,
@@ -894,6 +906,33 @@ class AnnotationCanvas(QWidget):
             self.update()
             self.optionsUpdated.emit()
 
+    def flatten_all_annotations(self):
+        self.markers_flattened = True
+        self.selected_marker_index = None
+        self.dragging_marker_index = None
+        for marker in self.markers:
+            marker['border_enabled'] = marker.get('border_enabled', True)
+        for rect in self.rectangles:
+            rect['flattened'] = True
+        self.rectangles_flattened = True
+        self.selected_rectangle_index = None
+        self.optionsUpdated.emit()
+
+    def undo_last_shape(self):
+        if self.markers and not self.markers_flattened:
+            self.markers.pop()
+            self.selected_marker_index = None
+            self.update()
+            self.optionsUpdated.emit()
+            return True
+        if self.rectangles and not self.rectangles_flattened:
+            self.rectangles.pop()
+            self.selected_rectangle_index = None
+            self.update()
+            self.optionsUpdated.emit()
+            return True
+        return False
+
     def _reset_rect_drag(self):
         self.rect_drag_mode = None
         self.rect_drag_handle = None
@@ -1137,6 +1176,8 @@ class AnnotationTab(QWidget):
         self.canvas = AnnotationCanvas(pixmap)
         self.save_dir = save_dir
         self.auto_saved_path = self._auto_save_pixmap(pixmap)
+        self.base_status_text = f"自动保存: {self.auto_saved_path}"
+        self.dirty = False
         layout = QVBoxLayout()
 
         toolbar = QToolBar("工具")
@@ -1174,6 +1215,12 @@ class AnnotationTab(QWidget):
         self.status_label = QLabel(f"自动保存: {self.auto_saved_path}")
         layout.addWidget(self.status_label)
         self.setLayout(layout)
+        self.canvas.optionsUpdated.connect(self._mark_dirty)
+
+        self.undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+        self.undo_shortcut.activated.connect(self._undo_last_action)
+        self.copy_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
+        self.copy_shortcut.activated.connect(self._copy_to_clipboard)
 
     def _auto_save_pixmap(self, pixmap: QPixmap):
         os.makedirs(self.save_dir, exist_ok=True)
@@ -1186,19 +1233,54 @@ class AnnotationTab(QWidget):
     def save_annotated_image(self):
         if self.canvas.markers and not self.canvas.markers_flattened:
             QMessageBox.warning(self, "请先平化顺序标记", "顺序标记平化后才能保存带标注的图像。")
-            return
+            return False
         annotated = self.canvas.export_pixmap()
         base, ext = os.path.splitext(os.path.basename(self.auto_saved_path))
         annotated_path = os.path.join(self.save_dir, f"{base}_annotated{ext}")
         if annotated.save(annotated_path, "PNG"):
             self.status_label.setText(f"标注图已保存: {annotated_path}")
-        else:
-            QMessageBox.warning(self, "保存失败", "无法写入标注截图，请检查保存路径。")
+            self.dirty = False
+            return True
+        QMessageBox.warning(self, "保存失败", "无法写入标注截图，请检查保存路径。")
+        return False
 
     def _set_tool(self, tool: Tool):
         self.canvas.set_tool(tool)
         self.marker_panel.setVisible(tool == Tool.MARKER)
         self.rectangle_panel.setVisible(tool == Tool.RECTANGLE)
+
+    def _mark_dirty(self):
+        self.dirty = True
+        self.status_label.setText(f"{self.base_status_text} *未保存")
+
+    def _undo_last_action(self):
+        if self.canvas.undo_last_shape():
+            self.status_label.setText("已撤销上一次操作")
+            self._mark_dirty()
+        else:
+            QMessageBox.information(self, "无法撤销", "当前没有可撤销的操作。")
+
+    def _copy_to_clipboard(self):
+        self.canvas.flatten_all_annotations()
+        pix = self.canvas.export_pixmap()
+        QApplication.clipboard().setPixmap(pix)
+        self.status_label.setText("已平化并复制到剪贴板")
+        self._mark_dirty()
+
+    def maybe_close(self):
+        if not self.dirty:
+            return True
+        reply = QMessageBox.question(
+            self,
+            "保存截图",
+            "当前截图有未保存的修改，是否保存？",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+        )
+        if reply == QMessageBox.Yes:
+            return self.save_annotated_image()
+        if reply == QMessageBox.Cancel:
+            return False
+        return True
 
 
 class MarkerOptionsPanel(QFrame):
@@ -1382,6 +1464,21 @@ class RectangleOptionsPanel(QFrame):
         actions.addWidget(width_label)
         actions.addWidget(self.width_spin)
 
+        radius_label = QLabel("圆角:")
+        self.radius_spin = QSpinBox()
+        self.radius_spin.setRange(0, 60)
+        self.radius_spin.valueChanged.connect(canvas.set_rectangle_corner_radius)
+        actions.addSpacing(10)
+        actions.addWidget(radius_label)
+        actions.addWidget(self.radius_spin)
+
+        self.square_btn = QPushButton("直角")
+        self.square_btn.clicked.connect(lambda: self._set_radius_preset(0))
+        self.round_btn = QPushButton("柔和圆角")
+        self.round_btn.clicked.connect(lambda: self._set_radius_preset(8))
+        actions.addWidget(self.square_btn)
+        actions.addWidget(self.round_btn)
+
         self.duplicate_btn = QPushButton("复制")
         self.duplicate_btn.clicked.connect(canvas.duplicate_rectangle)
         actions.addSpacing(10)
@@ -1412,7 +1509,14 @@ class RectangleOptionsPanel(QFrame):
         self.width_spin.blockSignals(True)
         self.width_spin.setValue(self.canvas.rectangle_border_width)
         self.width_spin.blockSignals(False)
+        self.radius_spin.blockSignals(True)
+        self.radius_spin.setValue(self.canvas.rectangle_corner_radius)
+        self.radius_spin.blockSignals(False)
         self.duplicate_btn.setEnabled(self.canvas._has_active_rectangle())
+
+    def _set_radius_preset(self, value: int):
+        self.canvas.set_rectangle_corner_radius(value)
+        self.sync_from_canvas()
 
 class AnnotationWorkspacePage(QWidget):
     def __init__(self, open_settings_callback):
@@ -1456,9 +1560,33 @@ class AnnotationWorkspacePage(QWidget):
     def _close_tab(self, index):
         widget = self.tabs.widget(index)
         if widget:
+            if hasattr(widget, "maybe_close") and not widget.maybe_close():
+                return
             widget.deleteLater()
         self.tabs.removeTab(index)
         self._update_hint_visibility()
+
+    def maybe_close_all(self):
+        dirty_tabs = [
+            self.tabs.widget(idx)
+            for idx in range(self.tabs.count())
+            if getattr(self.tabs.widget(idx), "dirty", False)
+        ]
+        if not dirty_tabs:
+            return True
+        reply = QMessageBox.question(
+            self,
+            "保存所有截图",
+            "当前有未保存的截图，是否全部保存？",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+        )
+        if reply == QMessageBox.Cancel:
+            return False
+        if reply == QMessageBox.Yes:
+            for tab in dirty_tabs:
+                if tab and not tab.save_annotated_image():
+                    return False
+        return True
 
 
 class CaptureOverlay(QWidget):
@@ -1760,6 +1888,9 @@ class ScreenSnapApp(QMainWindow):
         self._focus_workspace()
 
     def closeEvent(self, event):
+        if not self.workspace_page.maybe_close_all():
+            event.ignore()
+            return
         self._teardown_hotkeys()
         super().closeEvent(event)
 
