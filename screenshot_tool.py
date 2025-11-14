@@ -1530,6 +1530,8 @@ class AnnotationTab(QWidget):
         self.copy_shortcut.activated.connect(self._copy_to_clipboard)
         self.delete_shortcut = QShortcut(QKeySequence("Delete"), self)
         self.delete_shortcut.activated.connect(self._delete_selected)
+        self.escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self.escape_shortcut.activated.connect(self._handle_escape)
 
     def _clamp_quality(self, value):
         try:
@@ -1571,6 +1573,10 @@ class AnnotationTab(QWidget):
     def _handle_canvas_update(self):
         self._mark_dirty()
         self._update_panel_visibility()
+    
+    def _handle_escape(self):
+        if self._current_tool in (Tool.MARKER,):
+            self._set_tool(Tool.NONE)
 
     def _update_panel_visibility(self, preferred=None):
         kind = self.canvas.active_selection_kind()
