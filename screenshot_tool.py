@@ -39,6 +39,17 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 DEFAULT_SAVE_DIR = os.path.join(BASE_DIR, "screenshots")
 ICON_PATH = os.path.join(BASE_DIR, "favicon", "favicon.ico")
 _APP_ICON = None
+CLASSIC_COLORS = [
+    "#F44336",
+    "#FF9800",
+    "#FFC107",
+    "#4CAF50",
+    "#2196F3",
+    "#3F51B5",
+    "#9C27B0",
+    "#00BCD4",
+    "#607D8B",
+]
 
 
 def load_config():
@@ -699,13 +710,14 @@ class ComingSoonPage(QWidget):
 class AnnotationCanvas(QWidget):
     optionsUpdated = pyqtSignal()
 
+    HANDLE_SIZE = 12
+
     def __init__(self, pixmap: QPixmap):
         super().__init__()
         self.base_pixmap = pixmap
         self.setFixedSize(self.base_pixmap.size())
         self.rectangles = []
         self.markers = []
-        self.temp_rect = None
         self.tool = Tool.NONE
         self.marker_fill_color = QColor(220, 20, 60, 220)
         self.marker_border_color = QColor(255, 255, 255)
@@ -716,10 +728,21 @@ class AnnotationCanvas(QWidget):
         self.dragging_marker_index = None
         self.selected_marker_index = None
         self.markers_flattened = True
+        self.rectangle_fill_color = QColor(0, 0, 0, 0)
+        self.rectangle_border_color = QColor('#FF7043')
+        self.rectangle_border_enabled = True
+        self.rectangle_border_width = 3
+        self.rectangle_corner_radius = 8
+        self.rectangles_flattened = True
+        self.selected_rectangle_index = None
+        self.rect_drag_mode = None
+        self.rect_drag_handle = None
+        self.rect_initial_rect = QRect()
+        self.rect_drag_origin = QPoint()
 
     def set_tool(self, tool: Tool):
         self.tool = tool
-        self.temp_rect = None
+        self._reset_rect_drag()
         self.setCursor(Qt.CrossCursor if tool != Tool.NONE else Qt.ArrowCursor)
 
     def clear_annotations(self):
@@ -727,9 +750,11 @@ class AnnotationCanvas(QWidget):
         self.markers.clear()
         self.next_marker_number = 1
         self.markers_flattened = True
-        self.temp_rect = None
+        self.rectangles_flattened = True
         self.dragging_marker_index = None
         self.selected_marker_index = None
+        self.selected_rectangle_index = None
+        self._reset_rect_drag()
         self.update()
         self.optionsUpdated.emit()
 
@@ -744,14 +769,14 @@ class AnnotationCanvas(QWidget):
         if color.isValid():
             self.marker_fill_color = color
             if self._has_active_marker():
-                self.markers[self.selected_marker_index]["fill"] = QColor(color)
+                self.markers[self.selected_marker_index]['fill'] = QColor(color)
             self.update()
             self.optionsUpdated.emit()
 
     def set_marker_size(self, size: int):
         self.marker_size = max(10, min(120, size))
         if self._has_active_marker():
-            self.markers[self.selected_marker_index]["size"] = self.marker_size
+            self.markers[self.selected_marker_index]['size'] = self.marker_size
         self.update()
         self.optionsUpdated.emit()
 
@@ -761,14 +786,14 @@ class AnnotationCanvas(QWidget):
 
     def set_current_marker_number(self, number: int):
         if self._has_active_marker():
-            self.markers[self.selected_marker_index]["number"] = max(1, number)
+            self.markers[self.selected_marker_index]['number'] = max(1, number)
             self.update()
             self.optionsUpdated.emit()
 
     def set_marker_border_enabled(self, enabled: bool):
         self.marker_border_enabled = enabled
         if self._has_active_marker():
-            self.markers[self.selected_marker_index]["border_enabled"] = enabled
+            self.markers[self.selected_marker_index]['border_enabled'] = enabled
         self.update()
         self.optionsUpdated.emit()
 
@@ -776,14 +801,14 @@ class AnnotationCanvas(QWidget):
         if color.isValid():
             self.marker_border_color = color
             if self._has_active_marker():
-                self.markers[self.selected_marker_index]["border_color"] = QColor(color)
+                self.markers[self.selected_marker_index]['border_color'] = QColor(color)
             self.update()
             self.optionsUpdated.emit()
 
     def set_marker_font_ratio(self, ratio: float):
         self.marker_font_ratio = max(0.3, min(1.2, ratio))
         if self._has_active_marker():
-            self.markers[self.selected_marker_index]["font_ratio"] = self.marker_font_ratio
+            self.markers[self.selected_marker_index]['font_ratio'] = self.marker_font_ratio
         self.update()
         self.optionsUpdated.emit()
 
@@ -793,89 +818,222 @@ class AnnotationCanvas(QWidget):
         self.selected_marker_index = None
         self.optionsUpdated.emit()
 
+    def duplicate_marker(self):
+        if self._has_active_marker():
+            marker = dict(self.markers[self.selected_marker_index])
+            marker['pos'] = marker['pos'] + QPoint(12, 12)
+            self.markers.append(marker)
+            self.selected_marker_index = len(self.markers) - 1
+            self.dragging_marker_index = self.selected_marker_index
+            self.markers_flattened = False
+            self.update()
+            self.optionsUpdated.emit()
+
+    def _has_active_rectangle(self):
+        return (
+            self.selected_rectangle_index is not None
+            and not self.rectangles_flattened
+            and 0 <= self.selected_rectangle_index < len(self.rectangles)
+            and not self.rectangles[self.selected_rectangle_index]['flattened']
+        )
+
+    def set_rectangle_fill_color(self, color: QColor):
+        if color.isValid():
+            self.rectangle_fill_color = color
+            if self._has_active_rectangle():
+                self.rectangles[self.selected_rectangle_index]['fill'] = QColor(color)
+            self.update()
+            self.optionsUpdated.emit()
+
+    def set_rectangle_border_color(self, color: QColor):
+        if color.isValid():
+            self.rectangle_border_color = color
+            if self._has_active_rectangle():
+                self.rectangles[self.selected_rectangle_index]['border'] = QColor(color)
+            self.update()
+            self.optionsUpdated.emit()
+
+    def set_rectangle_border_width(self, width: int):
+        self.rectangle_border_width = max(1, min(20, width))
+        if self._has_active_rectangle():
+            self.rectangles[self.selected_rectangle_index]['width'] = self.rectangle_border_width
+        self.update()
+        self.optionsUpdated.emit()
+
+    def set_rectangle_corner_radius(self, radius: int):
+        self.rectangle_corner_radius = max(0, min(60, radius))
+        if self._has_active_rectangle():
+            self.rectangles[self.selected_rectangle_index]['radius'] = self.rectangle_corner_radius
+        self.update()
+        self.optionsUpdated.emit()
+
+    def set_rectangle_border_enabled(self, enabled: bool):
+        self.rectangle_border_enabled = enabled
+        if self._has_active_rectangle():
+            self.rectangles[self.selected_rectangle_index]['border_enabled'] = enabled
+        self.update()
+        self.optionsUpdated.emit()
+
+    def flatten_rectangle(self):
+        if self._has_active_rectangle():
+            self.rectangles[self.selected_rectangle_index]['flattened'] = True
+            self.selected_rectangle_index = None
+            if all(r['flattened'] for r in self.rectangles):
+                self.rectangles_flattened = True
+            self.update()
+            self.optionsUpdated.emit()
+
+    def duplicate_rectangle(self):
+        if self._has_active_rectangle():
+            info = dict(self.rectangles[self.selected_rectangle_index])
+            info['rect'] = info['rect'].translated(12, 12)
+            info['flattened'] = False
+            self.rectangles.append(info)
+            self.selected_rectangle_index = len(self.rectangles) - 1
+            self.rectangles_flattened = False
+            self.update()
+            self.optionsUpdated.emit()
+
+    def _reset_rect_drag(self):
+        self.rect_drag_mode = None
+        self.rect_drag_handle = None
+        self.rect_initial_rect = QRect()
+        self.rect_drag_origin = QPoint()
+
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
+        if self.tool == Tool.MARKER:
+            self._handle_marker_press(event)
+            return
         if self.tool == Tool.RECTANGLE:
-            self.temp_rect = QRect(event.pos(), event.pos())
-        elif self.tool == Tool.MARKER:
-            idx = self._marker_hit_test(event.pos())
-            if idx is not None and not self.markers_flattened:
-                self.dragging_marker_index = idx
-                self.selected_marker_index = idx
-                self.optionsUpdated.emit()
-            else:
-                marker = {
-                    "pos": event.pos(),
-                    "number": self.next_marker_number,
-                    "fill": QColor(self.marker_fill_color),
-                    "size": self.marker_size,
-                    "border_enabled": self.marker_border_enabled,
-                    "border_color": QColor(self.marker_border_color),
-                    "font_ratio": self.marker_font_ratio,
-                }
-                self.markers.append(marker)
-                self.next_marker_number += 1
-                self.markers_flattened = False
-                self.dragging_marker_index = len(self.markers) - 1
-                self.selected_marker_index = self.dragging_marker_index
-                self.optionsUpdated.emit()
-            self.update()
+            self._handle_rect_press(event)
+            return
 
     def mouseMoveEvent(self, event):
-        if self.tool == Tool.RECTANGLE and self.temp_rect is not None:
-            self.temp_rect.setBottomRight(event.pos())
+        if self.tool == Tool.MARKER and self.dragging_marker_index is not None and not self.markers_flattened:
+            self.markers[self.dragging_marker_index]['pos'] = event.pos()
             self.update()
-        elif self.tool == Tool.MARKER and self.dragging_marker_index is not None and not self.markers_flattened:
-            self.markers[self.dragging_marker_index]["pos"] = event.pos()
+            return
+        if self.tool == Tool.RECTANGLE and self.selected_rectangle_index is not None and self.rect_drag_mode:
+            info = self.rectangles[self.selected_rectangle_index]
+            rect = QRect(self.rect_initial_rect)
+            delta = event.pos() - self.rect_drag_origin
+            if self.rect_drag_mode == 'move':
+                rect.translate(delta)
+            else:
+                rect = self._resize_rect(self.rect_initial_rect, self.rect_drag_handle, delta, event.modifiers())
+            rect = rect.normalized()
+            if rect.width() > 4 and rect.height() > 4:
+                info['rect'] = rect
             self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        if self.tool == Tool.RECTANGLE and self.temp_rect is not None:
-            rect = self.temp_rect.normalized()
-            if rect.width() > 3 and rect.height() > 3:
-                self.rectangles.append(rect)
-            self.temp_rect = None
-            self.update()
-        elif self.tool == Tool.MARKER and self.dragging_marker_index is not None:
+        if self.tool == Tool.MARKER and self.dragging_marker_index is not None:
             self.dragging_marker_index = None
             self.update()
+        if self.tool == Tool.RECTANGLE:
+            self._reset_rect_drag()
+
+    def _handle_marker_press(self, event):
+        idx = self._marker_hit_test(event.pos())
+        if idx is not None and not self.markers_flattened:
+            self.dragging_marker_index = idx
+            self.selected_marker_index = idx
+            self.optionsUpdated.emit()
+        else:
+            marker = {
+                'pos': event.pos(),
+                'number': self.next_marker_number,
+                'fill': QColor(self.marker_fill_color),
+                'size': self.marker_size,
+                'border_enabled': self.marker_border_enabled,
+                'border_color': QColor(self.marker_border_color),
+                'font_ratio': self.marker_font_ratio,
+            }
+            self.markers.append(marker)
+            self.selected_marker_index = len(self.markers) - 1
+            self.dragging_marker_index = self.selected_marker_index
+            self.markers_flattened = False
+            self.next_marker_number += 1
+            self.optionsUpdated.emit()
+        self.update()
+
+    def _handle_rect_press(self, event):
+        idx, handle = self._rect_handle_hit_test(event.pos())
+        if idx is not None:
+            self.selected_rectangle_index = idx
+            self.rect_drag_mode = 'resize'
+            self.rect_drag_handle = handle
+            self.rect_initial_rect = QRect(self.rectangles[idx]['rect'])
+            self.rect_drag_origin = event.pos()
+            self.rectangles_flattened = False
+            self.optionsUpdated.emit()
+            return
+        idx = self._rect_hit_test(event.pos())
+        if idx is not None:
+            self.selected_rectangle_index = idx
+            self.rect_drag_mode = 'move'
+            self.rect_initial_rect = QRect(self.rectangles[idx]['rect'])
+            self.rect_drag_origin = event.pos()
+            self.rectangles_flattened = False
+            self.optionsUpdated.emit()
+            return
+        rect_info = {
+            'rect': QRect(event.pos(), event.pos()),
+            'fill': QColor(self.rectangle_fill_color),
+            'border': QColor(self.rectangle_border_color),
+            'border_enabled': self.rectangle_border_enabled,
+            'width': self.rectangle_border_width,
+            'radius': self.rectangle_corner_radius,
+            'flattened': False,
+        }
+        self.rectangles.append(rect_info)
+        self.selected_rectangle_index = len(self.rectangles) - 1
+        self.rect_drag_mode = 'resize'
+        self.rect_drag_handle = 'bottom-right'
+        self.rect_initial_rect = QRect(rect_info['rect'])
+        self.rect_drag_origin = event.pos()
+        self.rectangles_flattened = False
+        self.optionsUpdated.emit()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.drawPixmap(0, 0, self.base_pixmap)
-
         painter.setRenderHint(QPainter.Antialiasing)
-        pen = QPen(QColor(255, 215, 0), 3)
-        painter.setPen(pen)
-        for rect in self.rectangles:
-            painter.drawRect(rect)
-
-        if self.temp_rect is not None:
-            painter.setPen(QPen(QColor(135, 206, 250), 2, Qt.DashLine))
-            painter.drawRect(self.temp_rect.normalized())
-
+        for idx, info in enumerate(self.rectangles):
+            painter.setBrush(info['fill'])
+            if info['border_enabled']:
+                painter.setPen(QPen(info['border'], info['width']))
+            else:
+                painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(info['rect'], info['radius'], info['radius'])
+            if idx == self.selected_rectangle_index and not info['flattened']:
+                painter.setPen(QPen(QColor(255, 255, 255), 1, Qt.DashLine))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(info['rect'])
+                for handle_rect in self._handle_rects(info['rect']):
+                    painter.fillRect(handle_rect, QColor(255, 235, 59))
         painter.setPen(Qt.NoPen)
         font = QFont()
         font.setBold(True)
         for idx, marker in enumerate(self.markers):
-            point = marker["pos"]
-            radius = marker["size"]
-            font.setPixelSize(int(radius * marker["font_ratio"]))
+            radius = marker['size']
+            font.setPixelSize(int(radius * marker['font_ratio']))
             painter.setFont(font)
-            painter.setBrush(marker["fill"])
-            ellipse_rect = QRect(point.x() - radius, point.y() - radius, radius * 2, radius * 2)
+            ellipse_rect = QRect(marker['pos'].x() - radius, marker['pos'].y() - radius, radius * 2, radius * 2)
+            painter.setBrush(marker['fill'])
             painter.drawEllipse(ellipse_rect)
-            if marker["border_enabled"]:
-                painter.setPen(QPen(marker["border_color"], max(2, radius * 0.2)))
+            if marker['border_enabled']:
+                painter.setPen(QPen(marker['border_color'], max(2, radius * 0.2)))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(ellipse_rect)
                 painter.setPen(Qt.NoPen)
-            painter.setBrush(marker["fill"])
+            painter.setBrush(marker['fill'])
             painter.setPen(Qt.white)
-            painter.drawText(ellipse_rect, Qt.AlignCenter, str(marker["number"]))
+            painter.drawText(ellipse_rect, Qt.AlignCenter, str(marker['number']))
             painter.setPen(Qt.NoPen)
             if not self.markers_flattened and idx == self.dragging_marker_index:
                 painter.setPen(QPen(QColor(255, 255, 255), 2, Qt.DashLine))
@@ -886,45 +1044,92 @@ class AnnotationCanvas(QWidget):
         annotated = QPixmap(self.base_pixmap.size())
         annotated.fill(Qt.transparent)
         painter = QPainter(annotated)
-        painter.drawPixmap(0, 0, self.base_pixmap)
-
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(255, 215, 0), 3))
-        for rect in self.rectangles:
-            painter.drawRect(rect)
-
+        painter.drawPixmap(0, 0, self.base_pixmap)
+        for info in self.rectangles:
+            painter.setBrush(info['fill'])
+            if info['border_enabled']:
+                painter.setPen(QPen(info['border'], info['width']))
+            else:
+                painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(info['rect'], info['radius'], info['radius'])
+        painter.setPen(Qt.NoPen)
         font = QFont()
         font.setBold(True)
-        painter.setPen(Qt.NoPen)
         for marker in self.markers:
-            point = marker["pos"]
-            radius = marker["size"]
-            font.setPixelSize(int(radius * marker["font_ratio"]))
+            radius = marker['size']
+            font.setPixelSize(int(radius * marker['font_ratio']))
             painter.setFont(font)
-            painter.setBrush(marker["fill"])
-            ellipse_rect = QRect(point.x() - radius, point.y() - radius, radius * 2, radius * 2)
+            ellipse_rect = QRect(marker['pos'].x() - radius, marker['pos'].y() - radius, radius * 2, radius * 2)
+            painter.setBrush(marker['fill'])
             painter.drawEllipse(ellipse_rect)
-            if marker["border_enabled"]:
-                painter.setPen(QPen(marker["border_color"], max(2, radius * 0.2)))
+            if marker['border_enabled']:
+                painter.setPen(QPen(marker['border_color'], max(2, radius * 0.2)))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(ellipse_rect)
                 painter.setPen(Qt.NoPen)
-            painter.setBrush(marker["fill"])
+            painter.setBrush(marker['fill'])
             painter.setPen(Qt.white)
-            painter.drawText(ellipse_rect, Qt.AlignCenter, str(marker["number"]))
+            painter.drawText(ellipse_rect, Qt.AlignCenter, str(marker['number']))
             painter.setPen(Qt.NoPen)
-
         painter.end()
         return annotated
 
     def _marker_hit_test(self, pos: QPoint):
         for idx, marker in enumerate(self.markers):
-            radius = marker["size"]
-            ellipse_rect = QRect(marker["pos"].x() - radius, marker["pos"].y() - radius, radius * 2, radius * 2)
+            radius = marker['size']
+            ellipse_rect = QRect(marker['pos'].x() - radius, marker['pos'].y() - radius, radius * 2, radius * 2)
             if ellipse_rect.contains(pos):
                 return idx
         return None
 
+    def _rect_hit_test(self, pos: QPoint):
+        for idx in reversed(range(len(self.rectangles))):
+            info = self.rectangles[idx]
+            if info['rect'].contains(pos) and not info['flattened']:
+                return idx
+        return None
+
+    def _handle_rects(self, rect: QRect):
+        half = self.HANDLE_SIZE // 2
+        points = [rect.topLeft(), rect.topRight(), rect.bottomLeft(), rect.bottomRight()]
+        return [QRect(p.x() - half, p.y() - half, self.HANDLE_SIZE, self.HANDLE_SIZE) for p in points]
+
+    def _rect_handle_hit_test(self, pos: QPoint):
+        handles = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
+        for idx in reversed(range(len(self.rectangles))):
+            info = self.rectangles[idx]
+            if info['flattened']:
+                continue
+            for handle_name, handle_rect in zip(handles, self._handle_rects(info['rect'])):
+                if handle_rect.contains(pos):
+                    return idx, handle_name
+        return None, None
+
+    def _resize_rect(self, initial_rect: QRect, handle: str, delta: QPoint, modifiers):
+        rect = QRect(initial_rect)
+        dx, dy = delta.x(), delta.y()
+        if handle == 'top-left':
+            rect.setTopLeft(rect.topLeft() + delta)
+        elif handle == 'top-right':
+            rect.setTopRight(rect.topRight() + QPoint(dx, dy))
+        elif handle == 'bottom-left':
+            rect.setBottomLeft(rect.bottomLeft() + QPoint(dx, dy))
+        else:
+            rect.setBottomRight(rect.bottomRight() + delta)
+        if modifiers & Qt.ControlModifier:
+            width = rect.width()
+            height = rect.height()
+            size = min(abs(width), abs(height))
+            if width < 0:
+                rect.setLeft(rect.right() - size)
+            else:
+                rect.setRight(rect.left() + size)
+            if height < 0:
+                rect.setTop(rect.bottom() - size)
+            else:
+                rect.setBottom(rect.top() + size)
+        return rect
 
 class AnnotationTab(QWidget):
     def __init__(self, pixmap: QPixmap, save_dir: str):
@@ -958,6 +1163,10 @@ class AnnotationTab(QWidget):
         self.marker_panel.setVisible(False)
         layout.addWidget(self.marker_panel)
 
+        self.rectangle_panel = RectangleOptionsPanel(self.canvas)
+        self.rectangle_panel.setVisible(False)
+        layout.addWidget(self.rectangle_panel)
+
         scroll = QScrollArea()
         scroll.setWidget(self.canvas)
         layout.addWidget(scroll, 1)
@@ -989,6 +1198,7 @@ class AnnotationTab(QWidget):
     def _set_tool(self, tool: Tool):
         self.canvas.set_tool(tool)
         self.marker_panel.setVisible(tool == Tool.MARKER)
+        self.rectangle_panel.setVisible(tool == Tool.RECTANGLE)
 
 
 class MarkerOptionsPanel(QFrame):
@@ -1002,18 +1212,7 @@ class MarkerOptionsPanel(QFrame):
         palette_layout = QHBoxLayout()
         palette_label = QLabel("经典颜色:")
         palette_layout.addWidget(palette_label)
-        self.palette_colors = [
-            "#F44336",
-            "#FF9800",
-            "#FFC107",
-            "#4CAF50",
-            "#2196F3",
-            "#3F51B5",
-            "#9C27B0",
-            "#00BCD4",
-            "#607D8B",
-        ]
-        for hex_color in self.palette_colors:
+        for hex_color in CLASSIC_COLORS:
             btn = QPushButton()
             btn.setFixedSize(24, 24)
             btn.setStyleSheet(f"background-color: {hex_color}; border: 1px solid #777;")
@@ -1067,6 +1266,9 @@ class MarkerOptionsPanel(QFrame):
         self.number_spin.setRange(1, 999)
         self.number_spin.valueChanged.connect(canvas.set_next_marker_number)
 
+        duplicate_btn = QPushButton("重复")
+        duplicate_btn.clicked.connect(canvas.duplicate_marker)
+
         flatten_btn = QPushButton("平化")
         flatten_btn.clicked.connect(canvas.flatten_markers)
 
@@ -1082,6 +1284,7 @@ class MarkerOptionsPanel(QFrame):
         controls.addWidget(next_label)
         controls.addWidget(self.number_spin)
         controls.addStretch()
+        controls.addWidget(duplicate_btn)
         controls.addWidget(flatten_btn)
         layout.addLayout(controls)
 
@@ -1139,6 +1342,77 @@ class MarkerOptionsPanel(QFrame):
             self.current_number_spin.blockSignals(True)
             self.current_number_spin.setValue(self.canvas.markers[self.canvas.selected_marker_index]["number"])
             self.current_number_spin.blockSignals(False)
+        else:
+            self.current_number_spin.blockSignals(True)
+            self.current_number_spin.setValue(self.canvas.next_marker_number)
+            self.current_number_spin.blockSignals(False)
+
+
+class RectangleOptionsPanel(QFrame):
+    def __init__(self, canvas: AnnotationCanvas):
+        super().__init__()
+        self.canvas = canvas
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setStyleSheet("QFrame { background: #f7f7f7; border: 1px solid #dddddd; border-radius: 6px; }")
+
+        layout = QVBoxLayout()
+
+        palette_layout = QHBoxLayout()
+        palette_label = QLabel("经典颜色:")
+        palette_layout.addWidget(palette_label)
+        for hex_color in CLASSIC_COLORS:
+            btn = QPushButton()
+            btn.setFixedSize(24, 24)
+            btn.setStyleSheet(f"background-color: {hex_color}; border: 1px solid #777;")
+            btn.clicked.connect(lambda _, c=QColor(hex_color): self._apply_palette_color(c))
+            palette_layout.addWidget(btn)
+        palette_layout.addStretch()
+        layout.addLayout(palette_layout)
+
+        actions = QHBoxLayout()
+        self.color_btn = QPushButton("选择边框颜色")
+        self.color_btn.clicked.connect(self._choose_color)
+        actions.addWidget(self.color_btn)
+
+        width_label = QLabel("线宽:")
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(1, 20)
+        self.width_spin.valueChanged.connect(canvas.set_rectangle_border_width)
+        actions.addSpacing(10)
+        actions.addWidget(width_label)
+        actions.addWidget(self.width_spin)
+
+        self.duplicate_btn = QPushButton("复制")
+        self.duplicate_btn.clicked.connect(canvas.duplicate_rectangle)
+        actions.addSpacing(10)
+        actions.addWidget(self.duplicate_btn)
+
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        self.setLayout(layout)
+        self.canvas.optionsUpdated.connect(self.sync_from_canvas)
+        self.sync_from_canvas()
+
+    def _apply_palette_color(self, color: QColor):
+        self.canvas.set_rectangle_border_color(color)
+        self.sync_from_canvas()
+
+    def _choose_color(self):
+        color = QColorDialog.getColor(self.canvas.rectangle_border_color, self, "选择边框颜色")
+        if color.isValid():
+            self.canvas.set_rectangle_border_color(color)
+            self.sync_from_canvas()
+
+    def sync_from_canvas(self):
+        color = self.canvas.rectangle_border_color
+        self.color_btn.setStyleSheet(
+            f"background-color: {color.name(QColor.HexArgb)}; border: 1px solid #777; padding: 6px;"
+        )
+        self.width_spin.blockSignals(True)
+        self.width_spin.setValue(self.canvas.rectangle_border_width)
+        self.width_spin.blockSignals(False)
+        self.duplicate_btn.setEnabled(self.canvas._has_active_rectangle())
 
 class AnnotationWorkspacePage(QWidget):
     def __init__(self, open_settings_callback):
