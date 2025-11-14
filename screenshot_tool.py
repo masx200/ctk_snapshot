@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QShortcut,
+    QListWidget,
     QTabWidget,
     QStackedWidget,
     QToolBar,
@@ -68,7 +69,6 @@ DEFAULT_MARKER_STYLE = {
     "border_enabled": True,
     "size": 28,
     "font_ratio": 0.7,
-    "next_number": 1,
 }
 
 DEFAULT_RECT_STYLE = {
@@ -754,9 +754,10 @@ class AnnotationCanvas(QWidget):
         self.marker_border_enabled = DEFAULT_MARKER_STYLE["border_enabled"]
         self.marker_size = DEFAULT_MARKER_STYLE["size"]
         self.marker_font_ratio = DEFAULT_MARKER_STYLE["font_ratio"]
-        self.next_marker_number = DEFAULT_MARKER_STYLE["next_number"]
+        self.next_marker_number = DEFAULT_MARKER_STYLE.get("next_number", 1)
         self.dragging_marker_index = None
         self.selected_marker_index = None
+        self.hover_marker_index = None
         self.markers_flattened = True
         self.rectangle_fill_color = QColor(DEFAULT_RECT_STYLE["fill"])
         self.rectangle_border_color = QColor(DEFAULT_RECT_STYLE["border"])
@@ -776,10 +777,12 @@ class AnnotationCanvas(QWidget):
         self._reset_rect_drag()
         if tool == Tool.MARKER:
             self._update_cursor(Qt.CrossCursor)
+            self.hover_marker_index = None
         elif tool == Tool.RECTANGLE:
             self._update_cursor(Qt.ArrowCursor)
         else:
             self._update_cursor(Qt.ArrowCursor)
+            self.hover_marker_index = None
 
     def clear_annotations(self):
         self.rectangles.clear()
@@ -789,6 +792,7 @@ class AnnotationCanvas(QWidget):
         self.rectangles_flattened = True
         self.dragging_marker_index = None
         self.selected_marker_index = None
+        self.hover_marker_index = None
         self.selected_rectangle_index = None
         self._reset_rect_drag()
         self.update()
@@ -852,6 +856,8 @@ class AnnotationCanvas(QWidget):
         self.dragging_marker_index = None
         self.markers_flattened = True
         self.selected_marker_index = None
+        self.hover_marker_index = None
+        self.next_marker_number = 1
         self.optionsUpdated.emit()
 
     def duplicate_marker(self):
@@ -937,7 +943,7 @@ class AnnotationCanvas(QWidget):
             self.marker_border_enabled = marker_style.get("border_enabled", DEFAULT_MARKER_STYLE["border_enabled"])
             self.marker_size = marker_style.get("size", DEFAULT_MARKER_STYLE["size"])
             self.marker_font_ratio = marker_style.get("font_ratio", DEFAULT_MARKER_STYLE["font_ratio"])
-            self.next_marker_number = marker_style.get("next_number", DEFAULT_MARKER_STYLE["next_number"])
+        self.next_marker_number = 1
         if rect_style:
             self.rectangle_fill_color = QColor(rect_style.get("fill", DEFAULT_RECT_STYLE["fill"]))
             self.rectangle_border_color = QColor(rect_style.get("border", DEFAULT_RECT_STYLE["border"]))
@@ -968,6 +974,7 @@ class AnnotationCanvas(QWidget):
         if self._has_active_marker():
             self.markers.pop(self.selected_marker_index)
             self.selected_marker_index = None
+            self.hover_marker_index = None
             self.update()
             self.optionsUpdated.emit()
             return True
@@ -983,6 +990,7 @@ class AnnotationCanvas(QWidget):
         self.markers_flattened = True
         self.selected_marker_index = None
         self.dragging_marker_index = None
+        self.hover_marker_index = None
         for marker in self.markers:
             marker['border_enabled'] = marker.get('border_enabled', True)
         for rect in self.rectangles:
@@ -1028,6 +1036,8 @@ class AnnotationCanvas(QWidget):
             self.markers[self.dragging_marker_index]['pos'] = event.pos()
             self.update()
             return
+        if self.tool == Tool.MARKER and self.dragging_marker_index is None:
+            self._update_marker_hover_cursor(event.pos())
         if self.tool == Tool.RECTANGLE and self.selected_rectangle_index is not None and self.rect_drag_mode:
             info = self.rectangles[self.selected_rectangle_index]
             rect = QRect(self.rect_initial_rect)
@@ -1171,10 +1181,17 @@ class AnnotationCanvas(QWidget):
             painter.setPen(Qt.white)
             painter.drawText(ellipse_rect, Qt.AlignCenter, str(marker['number']))
             painter.setPen(Qt.NoPen)
-            if not self.markers_flattened and idx == self.dragging_marker_index:
+            should_draw = (
+                not self.markers_flattened
+                and self.dragging_marker_index is None
+                and (idx == self.selected_marker_index or idx == self.hover_marker_index)
+            )
+            if should_draw:
                 painter.setPen(QPen(QColor(255, 255, 255), 2, Qt.DashLine))
-                painter.drawRect(ellipse_rect.adjusted(-4, -4, 4, 4))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(ellipse_rect.adjusted(-6, -6, 6, 6))
                 painter.setPen(Qt.NoPen)
+                painter.setBrush(marker['fill'])
 
     def export_pixmap(self):
         annotated = QPixmap(self.base_pixmap.size())
@@ -1267,9 +1284,22 @@ class AnnotationCanvas(QWidget):
                 rect.setBottom(rect.top() + size)
         return rect
 
+    def _update_marker_hover_cursor(self, pos: QPoint):
+        if self.tool != Tool.MARKER or self.markers_flattened:
+            self.hover_marker_index = None
+            self._update_cursor(Qt.CrossCursor if self.tool == Tool.MARKER else Qt.ArrowCursor)
+            return
+        idx = self._marker_hit_test(pos)
+        if idx is not None:
+            self.hover_marker_index = idx
+            self._update_cursor(Qt.SizeAllCursor)
+        else:
+            self.hover_marker_index = None
+            self._update_cursor(Qt.CrossCursor)
+
     def _update_hover_cursor(self, pos: QPoint):
         if self.tool != Tool.RECTANGLE:
-            self._update_cursor(Qt.CrossCursor if self.tool == Tool.MARKER else Qt.ArrowCursor)
+            self._update_cursor(Qt.ArrowCursor)
             return
         idx, handle = self._rect_handle_hit_test(pos)
         if idx is not None and handle:

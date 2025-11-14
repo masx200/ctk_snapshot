@@ -4,21 +4,25 @@
     "capture": {
       "display": "Ctrl+Shift+Z",
       "shortcut": "ctrl+shift+z"
+    },
+    "repeat_capture": {
+      "display": "Ctrl+Shift+X",
+      "shortcut": "ctrl+shift+x"
     }
   },
   "marker_style": {
-    "fill": "#ffdc143c",
+    "fill": "#fff44336",
     "border": "#ffffffff",
     "border_enabled": true,
-    "size": 22,
+    "size": 17,
     "font_ratio": 1.1500000000000001,
-    "next_number": 19
+    "next_number": 1
   },
   "rectangle_style": {
     "fill": "#00000000",
-    "border": "#ffff7043",
+    "border": "#ffffc107",
     "border_enabled": true,
     "width": 3,
-    "radius": 8
+    "radius": 0
   }
 }
