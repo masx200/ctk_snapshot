@@ -17,6 +17,7 @@ from PyQt5.QtGui import (
     QIcon,
     QDesktopServices,
     QKeySequence,
+    QCursor,
 )
 from PyQt5.QtWidgets import (
     QAction,
@@ -2015,17 +2016,18 @@ class AnnotationWorkspacePage(QWidget):
 
 
 class CaptureOverlay(QWidget):
-    selectionMade = pyqtSignal(QPixmap, QRect)
+    selectionMade = pyqtSignal(QPixmap, QRect, str)
     canceled = pyqtSignal()
 
-    def __init__(self, screenshot: QPixmap):
+    def __init__(self, screenshot: QPixmap, origin: QPoint, screen):
         super().__init__()
         self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
         self.setWindowState(Qt.WindowFullScreen)
         self.setCursor(Qt.CrossCursor)
         self.screenshot = screenshot
+        self._screen = screen
         self.setFixedSize(self.screenshot.size())
-        self.move(0, 0)
+        self.move(origin)
         self.selection = None
         self.origin = None
         self.cursor_pos = None
@@ -2058,13 +2060,15 @@ class CaptureOverlay(QWidget):
             self.selection = QRect(self.origin, event.pos()).normalized()
             self.cursor_pos = event.pos()
             self.update()
+        else:
+            self.cursor_pos = event.pos()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.selection:
             rect = self.selection.normalized()
             if rect.width() > 5 and rect.height() > 5:
                 cropped = self.screenshot.copy(rect)
-                self.selectionMade.emit(cropped, rect)
+                self.selectionMade.emit(cropped, rect, self._screen.name())
             self.close()
 
     def keyPressEvent(self, event):
@@ -2112,7 +2116,8 @@ class ScreenSnapApp(QMainWindow):
         self.setWindowTitle("Snapshot Studio - Windows 截图工具")
         self.setWindowIcon(get_app_icon())
         self.config = load_config()
-        self.current_overlay = None
+        self._active_overlays = []
+        self._last_capture_screen_name = None
         self._image_quality = int(self.config.get("image_quality", DEFAULT_IMAGE_QUALITY))
         self.marker_style = self.config.get("marker_style", DEFAULT_MARKER_STYLE.copy())
         self.rectangle_style = self.config.get("rectangle_style", DEFAULT_RECT_STYLE.copy())
@@ -2246,24 +2251,23 @@ class ScreenSnapApp(QMainWindow):
         QTimer.singleShot(200, self._start_overlay_capture)
 
     def _start_overlay_capture(self):
-        screen = QGuiApplication.primaryScreen()
-        if not screen:
-            QMessageBox.critical(self, "错误", "找不到屏幕设备，无法截图。")
+        screens = QGuiApplication.screens()
+        if not screens:
+            QMessageBox.critical(self, "����", "�Ҳ�����Ļ�豸���޷���ͼ��")
             self.show()
             return
-        screenshot = screen.grabWindow(0)
-        self.current_overlay = CaptureOverlay(screenshot)
-        self.current_overlay.selectionMade.connect(self._on_selection)
-        self.current_overlay.canceled.connect(self._on_capture_cancel)
-        self.current_overlay.show()
+        self._clear_overlays()
+        for screen in screens:
+            self._create_overlay_for_screen(screen)
 
     def _on_capture_cancel(self):
+        self._clear_overlays()
         self.show()
-        self.current_overlay = None
 
-    def _on_selection(self, pixmap: QPixmap, selection_rect: QRect):
-        self.current_overlay = None
+    def _on_overlay_selection(self, pixmap: QPixmap, selection_rect: QRect, screen_name: str):
+        self._clear_overlays()
         self._last_selection_rect = QRect(selection_rect)
+        self._last_capture_screen_name = screen_name
         self.workspace_page.add_capture(pixmap, self._save_dir)
         self.home_page.set_repeat_enabled(True)
         self._focus_workspace()
@@ -2350,7 +2354,7 @@ class ScreenSnapApp(QMainWindow):
             self._repeat_capture()
 
     def _on_hotkey_trigger(self, action_id):
-        if self.current_overlay:
+        if self._active_overlays:
             return
         QTimer.singleShot(0, lambda: self._trigger_hotkey_action(action_id))
 
@@ -2364,20 +2368,21 @@ class ScreenSnapApp(QMainWindow):
 
     def _repeat_capture(self):
         if not self._last_selection_rect:
-            QMessageBox.information(self, "重复截图", "请先执行一次区域截图，才能使用重复截图热键。")
+            QMessageBox.information(self, "�ظ���ͼ", "����ִ��һ�������ͼ������ʹ���ظ���ͼ�ȼ���")
             return
         self.hide()
         QTimer.singleShot(200, self._do_repeat_capture)
 
     def _do_repeat_capture(self):
-        screen = QGuiApplication.primaryScreen()
+        target_screen = self._screen_by_name(self._last_capture_screen_name) or self._screen_for_cursor()
+        screen = target_screen or QGuiApplication.primaryScreen()
         if not screen:
-            QMessageBox.critical(self, "错误", "找不到屏幕设备，无法截图。")
+            QMessageBox.critical(self, "����", "�Ҳ�����Ļ�豸���޷���ͼ��")
             self.show()
             return
         rect = QRect(self._last_selection_rect)
         if rect.width() < 5 or rect.height() < 5:
-            QMessageBox.warning(self, "重复截图失败", "记录的区域尺寸无效，请重新截图。")
+            QMessageBox.warning(self, "�ظ���ͼʧ��", "��¼������ߴ���Ч�������½�ͼ��")
             self.show()
             return
         screenshot = screen.grabWindow(0)
@@ -2385,13 +2390,6 @@ class ScreenSnapApp(QMainWindow):
         self.workspace_page.add_capture(cropped, self._save_dir)
         self._focus_workspace()
         self._resize_for_image(cropped.size())
-
-    def closeEvent(self, event):
-        if not self.workspace_page.maybe_close_all():
-            event.ignore()
-            return
-        self._teardown_hotkeys()
-        super().closeEvent(event)
 
     def _resize_for_image(self, image_size: QSize):
         screen = QGuiApplication.primaryScreen()
@@ -2404,6 +2402,40 @@ class ScreenSnapApp(QMainWindow):
             target_w = min(target_w, available.width())
             target_h = min(target_h, available.height())
         self.resize(target_w, target_h)
+
+    def _create_overlay_for_screen(self, screen):
+        screenshot = screen.grabWindow(0)
+        overlay = CaptureOverlay(screenshot, screen.geometry().topLeft(), screen)
+        overlay.selectionMade.connect(self._on_overlay_selection)
+        overlay.canceled.connect(self._on_capture_cancel)
+        overlay.show()
+        self._active_overlays.append(overlay)
+
+    def _clear_overlays(self):
+        while self._active_overlays:
+            overlay = self._active_overlays.pop()
+            try:
+                overlay.selectionMade.disconnect(self._on_overlay_selection)
+                overlay.canceled.disconnect(self._on_capture_cancel)
+            except Exception:
+                pass
+            overlay.close()
+            overlay.deleteLater()
+
+    def _screen_for_cursor(self):
+        pos = QCursor.pos()
+        screen = QGuiApplication.screenAt(pos)
+        if not screen:
+            screen = QGuiApplication.primaryScreen()
+        return screen
+
+    def _screen_by_name(self, name):
+        if not name:
+            return None
+        for screen in QGuiApplication.screens():
+            if screen.name() == name:
+                return screen
+        return None
 
 
 def main():
