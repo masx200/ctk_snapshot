@@ -35,6 +35,8 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QSlider,
     QShortcut,
+    QGroupBox,
+    QRadioButton,
     QListWidget,
     QTabWidget,
     QStackedWidget,
@@ -447,17 +449,29 @@ class ShortcutDialog(QDialog):
 
 
 class GeneralSettingsPage(QWidget):
-    def __init__(self, auto_save_enabled, save_dir, auto_start_enabled, parent=None):
+    def __init__(
+        self,
+        auto_save_enabled,
+        save_dir,
+        auto_start_enabled,
+        close_behavior,
+        exit_unsaved_policy,
+        parent=None,
+    ):
         super().__init__(parent)
         self._auto_save_enabled = auto_save_enabled
         self._save_dir = save_dir or ""
+        self._close_behavior = close_behavior or "tray"
+        self._exit_unsaved_policy = exit_unsaved_policy or "save_all"
+        if self._exit_unsaved_policy not in ("save_all", "discard_all"):
+            self._exit_unsaved_policy = "save_all"
         layout = QVBoxLayout()
 
-        title = QLabel("系统设置 · 常规")
+        title = QLabel(u"\u7cfb\u7edf\u8bbe\u7f6e \xb7 \u5e38\u89c4")
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
         layout.addWidget(title)
 
-        intro = QLabel("可在此配置自动保存与基础管理项。后续会持续扩展更多选项。")
+        intro = QLabel(u"\u5728\u8fd9\u91cc\u53ef\u4ee5\u8bbe\u7f6e\u81ea\u52a8\u4fdd\u5b58\u3001\u81ea\u52a8\u542f\u52a8\u4ee5\u53ca\u5173\u95ed\u7a97\u53e3\u65f6\u7684\u9ed8\u8ba4\u52a8\u4f5c\u3002")
         intro.setStyleSheet("color: #666666;")
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -465,7 +479,7 @@ class GeneralSettingsPage(QWidget):
         layout.addSpacing(16)
 
         auto_save_box = QVBoxLayout()
-        self.auto_save_checkbox = QCheckBox("启用自动保存原始截图")
+        self.auto_save_checkbox = QCheckBox(u"\u5f00\u542f\u81ea\u52a8\u4fdd\u5b58\u539f\u59cb\u622a\u56fe")
         self.auto_save_checkbox.setChecked(auto_save_enabled)
         self.auto_save_checkbox.toggled.connect(self._on_auto_save_toggled)
         auto_save_box.addWidget(self.auto_save_checkbox)
@@ -474,12 +488,12 @@ class GeneralSettingsPage(QWidget):
         self.path_edit = QLineEdit(self._save_dir)
         self.path_edit.setReadOnly(True)
         path_row.addWidget(self.path_edit, 1)
-        self.choose_btn = QPushButton("更改目录")
+        self.choose_btn = QPushButton(u"\u9009\u62e9\u76ee\u5f55")
         self.choose_btn.clicked.connect(self._choose_dir)
         path_row.addWidget(self.choose_btn)
         auto_save_box.addLayout(path_row)
 
-        hint = QLabel("启用后，每次截图会自动写入上方目录；关闭后仅在手动保存时写入文件。")
+        hint = QLabel(u"\u542f\u7528\u540e\u6bcf\u6b21\u622a\u56fe\u90fd\u4f1a\u81ea\u52a8\u5199\u5165\u5f53\u524d\u76ee\u5f55\uff0c\u4ecd\u53ef\u5728\u624b\u52a8\u4fdd\u5b58\u65f6\u8986\u76d6\u3002")
         hint.setStyleSheet("color: #777777; font-size: 12px;")
         hint.setWordWrap(True)
         auto_save_box.addWidget(hint)
@@ -487,16 +501,54 @@ class GeneralSettingsPage(QWidget):
         layout.addLayout(auto_save_box)
         layout.addSpacing(16)
 
-        self.startup_checkbox = QCheckBox("开机自动启动并驻留系统托盘")
+        self.startup_checkbox = QCheckBox(u"\u5f00\u673a\u81ea\u52a8\u542f\u52a8\u5e76\u9a7b\u7559\u7cfb\u7edf\u6258\u76d8")
         self.startup_checkbox.setChecked(auto_start_enabled)
-        startup_hint = QLabel("启用后，系统启动时会自动运行 CTK Snapshot 并最小化到托盘。")
+        startup_hint = QLabel(u"\u7cfb\u7edf\u542f\u52a8\u540e\u4f1a\u81ea\u52a8\u8fd0\u884c CTK Snapshot \u5e76\u7f29\u5230\u6258\u76d8\u3002")
         startup_hint.setWordWrap(True)
         startup_hint.setStyleSheet("color: #777777; font-size: 12px;")
         layout.addWidget(self.startup_checkbox)
         layout.addWidget(startup_hint)
+
+        layout.addSpacing(20)
+
+        close_group = QGroupBox(u"\u5173\u95ed\u4e3b\u7a97\u53e3\u65f6")
+        close_group_layout = QVBoxLayout(close_group)
+        close_desc = QLabel(u"\u8bbe\u7f6e\u70b9\u51fb\u7a97\u53e3\u5173\u95ed\u6309\u94ae\u540e\u7684\u9ed8\u8ba4\u884c\u4e3a\u3002")
+        close_desc.setStyleSheet("color: #555555;")
+        close_desc.setWordWrap(True)
+        close_group_layout.addWidget(close_desc)
+
+        self.close_tray_radio = QRadioButton(u"\u6700\u5c0f\u5316\u5230\u7cfb\u7edf\u6258\u76d8\uff08\u9ed8\u8ba4\uff09")
+        self.close_exit_radio = QRadioButton(u"\u76f4\u63a5\u9000\u51fa\u7a0b\u5e8f")
+        close_group_layout.addWidget(self.close_tray_radio)
+        close_group_layout.addWidget(self.close_exit_radio)
+
+        self.exit_policy_container = QGroupBox(u"\u76f4\u63a5\u9000\u51fa\u65f6\u82e5\u5b58\u5728\u672a\u4fdd\u5b58\u7684\u56fe\u7247")
+        exit_layout = QVBoxLayout(self.exit_policy_container)
+        self.exit_save_radio = QRadioButton(u"\u81ea\u52a8\u4fdd\u5b58\u6240\u6709\u540e\u9000\u51fa")
+        self.exit_discard_radio = QRadioButton(u"\u4e0d\u4fdd\u5b58\u76f4\u63a5\u9000\u51fa\uff08\u5c06\u4e22\u5931\u4fee\u6539\uff09")
+        exit_layout.addWidget(self.exit_save_radio)
+        exit_layout.addWidget(self.exit_discard_radio)
+        close_group_layout.addWidget(self.exit_policy_container)
+
+        if self._close_behavior == "exit":
+            self.close_exit_radio.setChecked(True)
+        else:
+            self.close_tray_radio.setChecked(True)
+
+        if self._exit_unsaved_policy == "discard_all":
+            self.exit_discard_radio.setChecked(True)
+        else:
+            self.exit_save_radio.setChecked(True)
+
+        self.close_tray_radio.toggled.connect(self._update_exit_controls_state)
+        self.close_exit_radio.toggled.connect(self._update_exit_controls_state)
+
+        layout.addWidget(close_group)
         layout.addStretch()
         self.setLayout(layout)
         self._update_path_controls(auto_save_enabled)
+        self._update_exit_controls_state(self.close_exit_radio.isChecked())
 
     def _on_auto_save_toggled(self, checked):
         if checked and not self._save_dir:
@@ -515,11 +567,17 @@ class GeneralSettingsPage(QWidget):
         self.path_edit.setEnabled(enabled)
         self.choose_btn.setEnabled(enabled)
 
+    def _update_exit_controls_state(self, _=None):
+        exit_selected = self.close_exit_radio.isChecked()
+        self.exit_policy_container.setEnabled(exit_selected)
+
     def get_settings(self):
         return {
             "auto_save_enabled": self.auto_save_checkbox.isChecked(),
             "save_dir": self._save_dir,
             "auto_start_enabled": self.startup_checkbox.isChecked(),
+            "close_behavior": "exit" if self.close_exit_radio.isChecked() else "tray",
+            "exit_unsaved_policy": "discard_all" if self.exit_discard_radio.isChecked() else "save_all",
         }
 
 
@@ -688,6 +746,8 @@ class SettingsDialog(QDialog):
             "auto_save_enabled": config.get("auto_save_enabled", False),
             "save_dir": config.get("save_dir", DEFAULT_SAVE_DIR),
             "auto_start_enabled": config.get("auto_start_enabled", False),
+            "close_behavior": config.get("close_behavior", "tray"),
+            "exit_unsaved_policy": config.get("exit_unsaved_policy", "save_all"),
         }
         layout = QVBoxLayout()
 
@@ -718,6 +778,8 @@ class SettingsDialog(QDialog):
             self._general_settings["auto_save_enabled"],
             self._general_settings["save_dir"],
             self._general_settings["auto_start_enabled"],
+            self._general_settings["close_behavior"],
+            self._general_settings["exit_unsaved_policy"],
         )
         self.hotkey_page = HotkeySettingsPage(config.get("hotkeys", {}))
         self.quality_page = QualitySettingsPage(self._quality_value)
@@ -1624,6 +1686,8 @@ class AnnotationTab(QWidget):
         self.copy_shortcut.activated.connect(self._copy_to_clipboard)
         self.delete_shortcut = QShortcut(QKeySequence("Delete"), self)
         self.delete_shortcut.activated.connect(self._delete_selected)
+        self.save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.save_shortcut.activated.connect(self.save_annotated_image)
         self.escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.escape_shortcut.activated.connect(self._handle_escape)
 
@@ -2170,11 +2234,19 @@ class CaptureOverlay(QWidget):
         self.selection = None
         self.origin = None
         self.cursor_pos = None
+        self.setMouseTracking(True)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.setInterval(16)
+        self._cursor_timer.timeout.connect(self._sync_cursor_position)
+        self._cursor_timer.start()
+        self._sync_cursor_position(force=True)
+        self._scale_x = self._compute_scale(self.screenshot.width(), self.width())
+        self._scale_y = self._compute_scale(self.screenshot.height(), self.height())
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.drawPixmap(0, 0, self.screenshot)
+        painter.drawPixmap(self.rect(), self.screenshot)
 
         overlay_color = QColor(0, 0, 0, 120)
         painter.fillRect(self.rect(), overlay_color)
@@ -2201,6 +2273,7 @@ class CaptureOverlay(QWidget):
             self.update()
         else:
             self.cursor_pos = event.pos()
+            self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.selection:
@@ -2219,14 +2292,14 @@ class CaptureOverlay(QWidget):
     def _draw_magnifier(self, painter: QPainter):
         if self.cursor_pos is None:
             return
-        src_half = 24
+        src_half = 16
         size = QSize(src_half * 2, src_half * 2)
         x = max(src_half, min(self.cursor_pos.x(), self.width() - src_half - 1))
         y = max(src_half, min(self.cursor_pos.y(), self.height() - src_half - 1))
         logical_rect = QRect(QPoint(x - src_half, y - src_half), size)
         source_rect = self._device_rect(logical_rect)
         snippet = self.screenshot.copy(source_rect)
-        zoom = 6
+        zoom = 5
         dest_size = QSize(size.width() * zoom, size.height() * zoom)
         magnified = snippet.scaled(dest_size, Qt.KeepAspectRatio, Qt.FastTransformation)
 
@@ -2251,13 +2324,41 @@ class CaptureOverlay(QWidget):
         painter.drawLine(dest_rect.left(), center_y, dest_rect.right(), center_y)
 
     def _device_rect(self, logical_rect: QRect):
-        ratio = self.screenshot.devicePixelRatio()
-        return QRect(
-            int(logical_rect.x() * ratio),
-            int(logical_rect.y() * ratio),
-            int(logical_rect.width() * ratio),
-            int(logical_rect.height() * ratio),
-        )
+        if logical_rect is None:
+            return QRect()
+        x = int(round(logical_rect.x() * self._scale_x))
+        y = int(round(logical_rect.y() * self._scale_y))
+        w = max(1, int(round(logical_rect.width() * self._scale_x)))
+        h = max(1, int(round(logical_rect.height() * self._scale_y)))
+        rect = QRect(x, y, w, h)
+        return self._clamp_to_pixmap(rect)
+
+    def _sync_cursor_position(self, force=False):
+        global_pos = QCursor.pos()
+        local_pos = self.mapFromGlobal(global_pos)
+        if self.rect().contains(local_pos):
+            new_pos = local_pos
+        else:
+            new_pos = None
+        if force or new_pos != self.cursor_pos:
+            self.cursor_pos = new_pos
+            self.update()
+
+    def _clamp_to_pixmap(self, rect: QRect):
+        if self.screenshot.isNull():
+            return QRect(rect)
+        max_w = self.screenshot.width()
+        max_h = self.screenshot.height()
+        x = max(0, min(rect.x(), max_w - 1))
+        y = max(0, min(rect.y(), max_h - 1))
+        w = max(1, min(rect.width(), max_w - x))
+        h = max(1, min(rect.height(), max_h - y))
+        return QRect(x, y, w, h)
+
+    def _compute_scale(self, device, logical):
+        if logical <= 0:
+            return 1.0
+        return max(1e-6, device / float(logical))
 
 
 class ScreenSnapApp(QMainWindow):
@@ -2272,6 +2373,12 @@ class ScreenSnapApp(QMainWindow):
         self.auto_save_enabled = bool(self.config.get("auto_save_enabled", False))
         self.auto_start_enabled = bool(self.config.get("auto_start_enabled", False))
         self._image_quality = int(self.config.get("image_quality", DEFAULT_IMAGE_QUALITY))
+        self.close_behavior = self.config.get("close_behavior", "tray")
+        if self.close_behavior not in ("tray", "exit"):
+            self.close_behavior = "tray"
+        self.exit_unsaved_policy = self.config.get("exit_unsaved_policy", "save_all")
+        if self.exit_unsaved_policy not in ("save_all", "discard_all", "ask"):
+            self.exit_unsaved_policy = "save_all"
         self.marker_style = self.config.get("marker_style", DEFAULT_MARKER_STYLE.copy())
         self.rectangle_style = self.config.get("rectangle_style", DEFAULT_RECT_STYLE.copy())
         self.config.setdefault("marker_style", self.marker_style)
@@ -2279,6 +2386,8 @@ class ScreenSnapApp(QMainWindow):
         self.config.setdefault("image_quality", self._image_quality)
         self.config.setdefault("auto_save_enabled", self.auto_save_enabled)
         self.config.setdefault("auto_start_enabled", self.auto_start_enabled)
+        self.config.setdefault("close_behavior", self.close_behavior)
+        self.config.setdefault("exit_unsaved_policy", self.exit_unsaved_policy)
         save_config(self.config)
 
         self.workspace_page = AnnotationWorkspacePage(
@@ -2381,7 +2490,13 @@ class ScreenSnapApp(QMainWindow):
 
     def _focus_workspace(self):
         self._switch_page("edit")
-        self.show()
+        if self.tray_icon and self.tray_icon.isVisible():
+            self._restore_from_tray()
+            return
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
         self.raise_()
         self.activateWindow()
 
@@ -2416,6 +2531,7 @@ class ScreenSnapApp(QMainWindow):
         self.home_page.set_repeat_enabled(True)
         self._focus_workspace()
         self._resize_for_image(pixmap.size())
+        QApplication.clipboard().setPixmap(pixmap)
 
     def _hotkey_display_text(self, action_id):
         hotkey_info = self.config.get("hotkeys", {}).get(action_id, {})
@@ -2457,6 +2573,14 @@ class ScreenSnapApp(QMainWindow):
             new_auto_start = bool(general_settings.get("auto_start_enabled", False))
             self.auto_start_enabled = new_auto_start
             self.config["auto_start_enabled"] = self.auto_start_enabled
+            self.close_behavior = general_settings.get("close_behavior", self.close_behavior)
+            if self.close_behavior not in ("tray", "exit"):
+                self.close_behavior = "tray"
+            self.exit_unsaved_policy = general_settings.get("exit_unsaved_policy", self.exit_unsaved_policy)
+            if self.exit_unsaved_policy not in ("save_all", "discard_all"):
+                self.exit_unsaved_policy = "save_all"
+            self.config["close_behavior"] = self.close_behavior
+            self.config["exit_unsaved_policy"] = self.exit_unsaved_policy
             save_config(self.config)
             self.workspace_page.set_image_quality(self._image_quality)
             self.workspace_page.set_auto_save_enabled(self.auto_save_enabled)
@@ -2541,52 +2665,40 @@ class ScreenSnapApp(QMainWindow):
             self.show()
             return
         screenshot = self._grab_screen_pixmap(screen)
-        cropped = self._copy_from_pixmap(screenshot, rect)
+        cropped = self._copy_from_pixmap(screenshot, rect, screen)
         self.workspace_page.add_capture(cropped, self._save_dir)
         self._focus_workspace()
         self._resize_for_image(cropped.size())
+        QApplication.clipboard().setPixmap(cropped)
 
     def closeEvent(self, event):
+        behavior = self.close_behavior
+        tray_available = bool(self.tray_icon and QSystemTrayIcon.isSystemTrayAvailable())
+        if behavior == "tray" and not tray_available:
+            behavior = "exit"
         if self._closing_via_tray_exit:
-            if not self.workspace_page.maybe_close_all():
-                event.ignore()
-                self._closing_via_tray_exit = False
-                return
-            self._cleanup_before_exit()
-            self._closing_via_tray_exit = False
-            super().closeEvent(event)
-            return
-        action = self._ask_close_behavior()
-        if action == "cancel":
-            event.ignore()
-            return
-        if action == "tray":
+            behavior = "exit"
+        if behavior == "tray":
             event.ignore()
             self._minimize_to_tray()
             return
-        if not self.workspace_page.maybe_close_all():
+        if not self._handle_unsaved_before_exit():
             event.ignore()
+            self._closing_via_tray_exit = False
             return
         self._cleanup_before_exit()
+        self._closing_via_tray_exit = False
         super().closeEvent(event)
 
-    def _ask_close_behavior(self):
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return "exit"
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Question)
-        box.setWindowTitle("关闭 CTK Snapshot")
-        box.setText("请选择关闭方式：")
-        exit_btn = box.addButton("直接退出程序", QMessageBox.AcceptRole)
-        tray_btn = box.addButton("最小化到系统托盘", QMessageBox.ActionRole)
-        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
-        box.exec_()
-        clicked = box.clickedButton()
-        if clicked == cancel_btn:
-            return "cancel"
-        if clicked == tray_btn:
-            return "tray"
-        return "exit"
+    def _handle_unsaved_before_exit(self):
+        if not self.workspace_page.has_unsaved_tabs():
+            return True
+        policy = self.exit_unsaved_policy
+        if policy == "save_all":
+            return self.workspace_page.save_all_dirty()
+        if policy == "discard_all":
+            return True
+        return self.workspace_page.maybe_close_all()
 
     def _resize_for_image(self, image_size: QSize):
         screen = QGuiApplication.primaryScreen()
@@ -2596,8 +2708,10 @@ class ScreenSnapApp(QMainWindow):
         target_w = max(min_w, image_size.width() + margin_w)
         target_h = max(min_h, image_size.height() + margin_h)
         if available:
-            target_w = min(target_w, available.width())
-            target_h = min(target_h, available.height())
+            max_w = max(min_w, available.width() - 20)
+            max_h = max(min_h, available.height() - 20)
+            target_w = min(target_w, max_w)
+            target_h = min(target_h, max_h)
         self.resize(target_w, target_h)
 
     def _setup_tray_icon(self):
@@ -2712,17 +2826,37 @@ class ScreenSnapApp(QMainWindow):
                 return screen
         return None
 
-    def _copy_from_pixmap(self, pixmap, rect: QRect):
-        ratio = pixmap.devicePixelRatio()
-        return pixmap.copy(
-            int(rect.x() * ratio),
-            int(rect.y() * ratio),
-            int(rect.width() * ratio),
-            int(rect.height() * ratio),
-        )
+    def _copy_from_pixmap(self, pixmap, rect: QRect, screen):
+        device_rect = self._logical_rect_to_device(rect, pixmap, screen)
+        return pixmap.copy(device_rect)
+
+    def _logical_rect_to_device(self, rect: QRect, pixmap: QPixmap, screen):
+        if rect is None:
+            return QRect()
+        logical_width = screen.geometry().width() if screen else pixmap.width()
+        logical_height = screen.geometry().height() if screen else pixmap.height()
+        logical_width = max(1, logical_width)
+        logical_height = max(1, logical_height)
+        pix_w = max(1, pixmap.width())
+        pix_h = max(1, pixmap.height())
+        scale_x = pix_w / float(logical_width)
+        scale_y = pix_h / float(logical_height)
+        x = int(round(rect.x() * scale_x))
+        y = int(round(rect.y() * scale_y))
+        w = max(1, int(round(rect.width() * scale_x)))
+        h = max(1, int(round(rect.height() * scale_y)))
+        x = max(0, min(x, pix_w - 1))
+        y = max(0, min(y, pix_h - 1))
+        if x + w > pix_w:
+            w = pix_w - x
+        if y + h > pix_h:
+            h = pix_h - y
+        return QRect(x, y, w, h)
 
     def _grab_screen_pixmap(self, screen):
-        return screen.grabWindow(0)
+        native = screen.grabWindow(0)
+        native.setDevicePixelRatio(1.0)
+        return native
 
 
 def main():

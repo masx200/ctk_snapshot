@@ -25,7 +25,9 @@
     "width": 2,
     "radius": 0
   },
-  "image_quality": 74,
+  "image_quality": 100,
   "auto_save_enabled": true,
-  "auto_start_enabled": true
+  "auto_start_enabled": true,
+  "close_behavior": "tray",
+  "exit_unsaved_policy": "save_all"
 }
