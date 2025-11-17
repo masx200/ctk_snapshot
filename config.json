@@ -1,5 +1,5 @@
 {
-  "save_dir": "C:\\Users\\ThinkPad\\CursorProjects\\snapshot\\screenshots",
+  "save_dir": "C:/Users/ThinkPad/Documents/PicPick",
   "hotkeys": {
     "capture": {
       "display": "Ctrl+Shift+Z",
@@ -14,16 +14,18 @@
     "fill": "#fff44336",
     "border": "#ffffaa00",
     "border_enabled": true,
-    "size": 17,
+    "size": 11,
     "font_ratio": 1.1500000000000001,
-    "next_number": 9
+    "next_number": 1
   },
   "rectangle_style": {
     "fill": "#00000000",
-    "border": "#ffff9800",
+    "border": "#ffaa007f",
     "border_enabled": true,
-    "width": 3,
-    "radius": 8
+    "width": 2,
+    "radius": 0
   },
-  "image_quality": 74
+  "image_quality": 74,
+  "auto_save_enabled": true,
+  "auto_start_enabled": true
 }

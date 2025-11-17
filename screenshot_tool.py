@@ -3,6 +3,7 @@ from ctypes import wintypes
 import json
 import os
 import sys
+import winreg
 from datetime import datetime
 from enum import Enum, auto
 
@@ -45,6 +46,8 @@ from PyQt5.QtWidgets import (
     QFrame,
     QSizePolicy,
     QCheckBox,
+    QSystemTrayIcon,
+    QMenu,
 )
 
 
@@ -180,6 +183,8 @@ HOTKEY_ACTIONS = [
 ]
 
 WM_HOTKEY = 0x0312
+RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_REG_NAME = "CTKSnapshot"
 MODIFIER_BITMASK = {
     "alt": 0x0001,
     "ctrl": 0x0002,
@@ -442,32 +447,80 @@ class ShortcutDialog(QDialog):
 
 
 class GeneralSettingsPage(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, auto_save_enabled, save_dir, auto_start_enabled, parent=None):
         super().__init__(parent)
+        self._auto_save_enabled = auto_save_enabled
+        self._save_dir = save_dir or ""
         layout = QVBoxLayout()
-        title = QLabel("控制中心")
+
+        title = QLabel("系统设置 · 常规")
         title.setStyleSheet("font-size: 20px; font-weight: 600;")
-        subtitle = QLabel("集中管理保存路径、快捷键以及未来的更多功能。")
-        subtitle.setStyleSheet("color: #666666;")
-        subtitle.setWordWrap(True)
-
         layout.addWidget(title)
-        layout.addWidget(subtitle)
 
-        roadmap = QLabel(
-            "即将支持：\n"
-            "• 多场景截图模式（窗口截图、滚动截图等）\n"
-            "• 云端同步与团队共享\n"
-            "• 高级标注与模板库\n"
-            "• 自动化脚本与批量导出"
-        )
-        roadmap.setStyleSheet("line-height: 24px; color: #444444;")
-        roadmap.setWordWrap(True)
+        intro = QLabel("可在此配置自动保存与基础管理项。后续会持续扩展更多选项。")
+        intro.setStyleSheet("color: #666666;")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
 
-        layout.addSpacing(20)
-        layout.addWidget(roadmap)
+        layout.addSpacing(16)
+
+        auto_save_box = QVBoxLayout()
+        self.auto_save_checkbox = QCheckBox("启用自动保存原始截图")
+        self.auto_save_checkbox.setChecked(auto_save_enabled)
+        self.auto_save_checkbox.toggled.connect(self._on_auto_save_toggled)
+        auto_save_box.addWidget(self.auto_save_checkbox)
+
+        path_row = QHBoxLayout()
+        self.path_edit = QLineEdit(self._save_dir)
+        self.path_edit.setReadOnly(True)
+        path_row.addWidget(self.path_edit, 1)
+        self.choose_btn = QPushButton("更改目录")
+        self.choose_btn.clicked.connect(self._choose_dir)
+        path_row.addWidget(self.choose_btn)
+        auto_save_box.addLayout(path_row)
+
+        hint = QLabel("启用后，每次截图会自动写入上方目录；关闭后仅在手动保存时写入文件。")
+        hint.setStyleSheet("color: #777777; font-size: 12px;")
+        hint.setWordWrap(True)
+        auto_save_box.addWidget(hint)
+
+        layout.addLayout(auto_save_box)
+        layout.addSpacing(16)
+
+        self.startup_checkbox = QCheckBox("开机自动启动并驻留系统托盘")
+        self.startup_checkbox.setChecked(auto_start_enabled)
+        startup_hint = QLabel("启用后，系统启动时会自动运行 CTK Snapshot 并最小化到托盘。")
+        startup_hint.setWordWrap(True)
+        startup_hint.setStyleSheet("color: #777777; font-size: 12px;")
+        layout.addWidget(self.startup_checkbox)
+        layout.addWidget(startup_hint)
         layout.addStretch()
         self.setLayout(layout)
+        self._update_path_controls(auto_save_enabled)
+
+    def _on_auto_save_toggled(self, checked):
+        if checked and not self._save_dir:
+            self._choose_dir()
+        self._update_path_controls(checked)
+
+    def _choose_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "选择自动保存目录", self._save_dir or DEFAULT_SAVE_DIR)
+        if folder:
+            self._save_dir = folder
+            self.path_edit.setText(folder)
+        elif not self._save_dir:
+            self.auto_save_checkbox.setChecked(False)
+
+    def _update_path_controls(self, enabled):
+        self.path_edit.setEnabled(enabled)
+        self.choose_btn.setEnabled(enabled)
+
+    def get_settings(self):
+        return {
+            "auto_save_enabled": self.auto_save_checkbox.isChecked(),
+            "save_dir": self._save_dir,
+            "auto_start_enabled": self.startup_checkbox.isChecked(),
+        }
 
 
 class HotkeySettingsPage(QWidget):
@@ -631,6 +684,11 @@ class SettingsDialog(QDialog):
         self.resize(900, 600)
         self._hotkey_result = config.get("hotkeys", {}).copy()
         self._quality_value = int(config.get("image_quality", DEFAULT_IMAGE_QUALITY))
+        self._general_settings = {
+            "auto_save_enabled": config.get("auto_save_enabled", False),
+            "save_dir": config.get("save_dir", DEFAULT_SAVE_DIR),
+            "auto_start_enabled": config.get("auto_start_enabled", False),
+        }
         layout = QVBoxLayout()
 
         header = QLabel("配置中心")
@@ -656,7 +714,11 @@ class SettingsDialog(QDialog):
         content_layout.addWidget(separator)
 
         self.stack = QStackedWidget()
-        self.general_page = GeneralSettingsPage()
+        self.general_page = GeneralSettingsPage(
+            self._general_settings["auto_save_enabled"],
+            self._general_settings["save_dir"],
+            self._general_settings["auto_start_enabled"],
+        )
         self.hotkey_page = HotkeySettingsPage(config.get("hotkeys", {}))
         self.quality_page = QualitySettingsPage(self._quality_value)
         self.stack.addWidget(self.general_page)
@@ -682,6 +744,11 @@ class SettingsDialog(QDialog):
         self.nav_list.setCurrentRow(0)
 
     def accept(self):
+        general_settings = self.general_page.get_settings()
+        if general_settings["auto_save_enabled"] and not general_settings["save_dir"]:
+            QMessageBox.warning(self, "自动保存", "启用自动保存前请先选择有效的保存目录。")
+            return
+        self._general_settings = general_settings
         self._hotkey_result = self.hotkey_page.get_hotkeys()
         self._quality_value = self.quality_page.get_quality()
         super().accept()
@@ -691,6 +758,9 @@ class SettingsDialog(QDialog):
 
     def get_image_quality(self):
         return self._quality_value
+
+    def get_general_settings(self):
+        return self._general_settings
 
 class ActionButton(QPushButton):
     def __init__(self, title, subtitle="", callback=None, enabled=True):
@@ -711,7 +781,6 @@ class ActionButton(QPushButton):
 
 
 class HomePage(QWidget):
-    changeFolderRequested = pyqtSignal()
     openFolderRequested = pyqtSignal()
     captureRequested = pyqtSignal()
     repeatRequested = pyqtSignal()
@@ -729,24 +798,6 @@ class HomePage(QWidget):
         title = QLabel("选择操作…")
         title.setStyleSheet("font-size: 24px; font-weight: 700; margin-bottom: 8px;")
         layout.addWidget(title)
-
-        folder_frame = QFrame()
-        folder_frame.setFrameShape(QFrame.StyledPanel)
-        folder_frame.setStyleSheet("QFrame { background: #f4f6fb; border-radius: 10px; }")
-        folder_layout = QHBoxLayout(folder_frame)
-        info = QLabel("保存文件夹")
-        info.setStyleSheet("font-weight: 600;")
-        folder_layout.addWidget(info)
-        self.path_display = QLineEdit(self._save_dir)
-        self.path_display.setReadOnly(True)
-        folder_layout.addWidget(self.path_display, 1)
-        choose_btn = QPushButton("选择路径")
-        choose_btn.clicked.connect(self.changeFolderRequested.emit)
-        folder_layout.addWidget(choose_btn)
-        open_btn = QPushButton("打开目录")
-        open_btn.clicked.connect(self.openFolderRequested.emit)
-        folder_layout.addWidget(open_btn)
-        layout.addWidget(folder_frame)
 
         content_layout = QHBoxLayout()
 
@@ -772,6 +823,7 @@ class HomePage(QWidget):
         tools_label = QLabel("标注管理")
         tools_label.setStyleSheet("font-size: 18px; font-weight: 600;")
         tools_layout.addWidget(tools_label)
+        tools_layout.addWidget(ActionButton("打开保存目录", "快速查看文件", self.openFolderRequested.emit))
         tools_layout.addWidget(ActionButton("系统设置", "热键、自定义流程", self.openSettingsRequested.emit))
         tools_layout.addWidget(ActionButton("标注工作台", "查看历史截图并继续标注", self.openWorkspaceRequested.emit))
         self.hotkey_summary_label = QLabel()
@@ -784,10 +836,6 @@ class HomePage(QWidget):
         layout.addLayout(content_layout)
         layout.addStretch()
         self.setLayout(layout)
-    def set_save_dir(self, path):
-        self._save_dir = path
-        self.path_display.setText(path)
-
     def set_repeat_enabled(self, enabled):
         self.repeat_button.setEnabled(enabled)
 
@@ -804,6 +852,35 @@ class ComingSoonPage(QWidget):
         label.setStyleSheet("font-size: 18px; color: #5f6b7c;")
         layout.addStretch()
         layout.addWidget(label)
+        layout.addStretch()
+        self.setLayout(layout)
+
+
+class AboutPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout()
+        title = QLabel("CTK Snapshot - 关于")
+        title.setStyleSheet("font-size: 22px; font-weight: 700;")
+        intro = QLabel(
+            "CTK Snapshot 是一款面向个人效率的截图标注工具，"
+            "提供区域截取、批量导入、矩形/顺序标记、放大镜等体验。"
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #4a5568; font-size: 14px;")
+        author = QLabel("作者：乾颐堂（现任明教教主）")
+        author.setStyleSheet("font-size: 16px; font-weight: 600; margin-top: 12px;")
+        version = QLabel("版本：1.0.1")
+        version.setStyleSheet("font-size: 14px; color: #5f6b7c;")
+        contact = QLabel("反馈邮箱：collinsctk@qytang.com\n如有 Bug 或建议请邮件联系。")
+        contact.setWordWrap(True)
+        contact.setStyleSheet("font-size: 14px; color: #4a5568; margin-top: 12px;")
+        layout.addWidget(title)
+        layout.addSpacing(8)
+        layout.addWidget(intro)
+        layout.addWidget(author)
+        layout.addWidget(version)
+        layout.addWidget(contact)
         layout.addStretch()
         self.setLayout(layout)
 
@@ -844,6 +921,7 @@ class AnnotationCanvas(QWidget):
         self.rect_initial_rect = QRect()
         self.rect_drag_origin = QPoint()
         self.creating_new_rect = False
+        self._marker_dragging = False
 
     def set_tool(self, tool: Tool):
         self.tool = tool
@@ -863,6 +941,7 @@ class AnnotationCanvas(QWidget):
         self.hover_marker_index = None
         self.selected_rectangle_index = None
         self._reset_rect_drag()
+        self._marker_dragging = False
         self.update()
         self.optionsUpdated.emit()
 
@@ -1164,6 +1243,7 @@ class AnnotationCanvas(QWidget):
         if event.button() != Qt.LeftButton:
             return
         if self.dragging_marker_index is not None:
+            self._end_marker_drag()
             self.dragging_marker_index = None
             self.update()
         if self.rect_drag_mode and self.selected_rectangle_index is not None:
@@ -1188,6 +1268,7 @@ class AnnotationCanvas(QWidget):
             self.selected_rectangle_index = None
             self.rect_drag_mode = None
             self._set_hover_marker(None)
+            self._begin_marker_drag()
             self.optionsUpdated.emit()
             self.update()
             return True
@@ -1209,10 +1290,21 @@ class AnnotationCanvas(QWidget):
             self.markers_flattened = False
             self._set_hover_marker(None)
             self.next_marker_number += 1
+            self._begin_marker_drag()
             self.optionsUpdated.emit()
             self.update()
             return True
         return False
+
+    def _begin_marker_drag(self):
+        if not self._marker_dragging:
+            self._marker_dragging = True
+            self.setCursor(Qt.BlankCursor)
+
+    def _end_marker_drag(self):
+        if self._marker_dragging:
+            self._marker_dragging = False
+            self._update_pointer_feedback(self.mapFromGlobal(QCursor.pos()))
 
     def _handle_rect_press(self, event, allow_creation=True, handles_only=False):
         idx, handle = self._rect_handle_hit_test(event.pos())
@@ -1286,12 +1378,6 @@ class AnnotationCanvas(QWidget):
             else:
                 painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(info['rect'], info['radius'], info['radius'])
-            if idx == self.selected_rectangle_index and not info['flattened']:
-                painter.setPen(QPen(QColor(255, 255, 255), 1, Qt.DashLine))
-                painter.setBrush(Qt.NoBrush)
-                painter.drawRect(info['rect'])
-                for handle_rect in self._handle_rects(info['rect']):
-                    painter.fillRect(handle_rect, QColor(255, 235, 59))
         painter.setPen(Qt.NoPen)
         font = QFont()
         font.setBold(True)
@@ -1314,12 +1400,15 @@ class AnnotationCanvas(QWidget):
             should_draw = (
                 not self.markers_flattened
                 and self.dragging_marker_index is None
-                and (idx == self.selected_marker_index or idx == self.hover_marker_index)
+                and idx == self.selected_marker_index
             )
             if should_draw:
-                painter.setPen(QPen(QColor(255, 255, 255), 2, Qt.DashLine))
-                painter.setBrush(Qt.NoBrush)
-                painter.drawRect(ellipse_rect.adjusted(-6, -6, 6, 6))
+                glow_rect = ellipse_rect.adjusted(-int(radius * 0.2), -int(radius * 0.2), int(radius * 0.2), int(radius * 0.2))
+                color = QColor(marker['fill'])
+                color.setAlpha(120)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(color)
+                painter.drawEllipse(glow_rect)
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(marker['fill'])
 
@@ -1420,6 +1509,8 @@ class AnnotationCanvas(QWidget):
             self.update()
 
     def _update_pointer_feedback(self, pos: QPoint):
+        if self._marker_dragging:
+            return
         idx, handle = self._rect_handle_hit_test(pos)
         if idx is not None and handle:
             self._set_hover_marker(None)
@@ -1453,9 +1544,10 @@ class AnnotationCanvas(QWidget):
 
 class AnnotationTab(QWidget):
     dirtyStateChanged = pyqtSignal(bool)
-    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback, image_quality, source_path=None):
+    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback, image_quality, auto_save_enabled, source_path=None):
         super().__init__()
         self.image_quality = self._clamp_quality(image_quality)
+        self.auto_save_enabled = bool(auto_save_enabled)
         self.canvas = AnnotationCanvas(pixmap)
         self.canvas.apply_style_defaults(style_state.get("marker"), style_state.get("rectangle"))
         self.save_dir = save_dir
@@ -1468,10 +1560,7 @@ class AnnotationTab(QWidget):
         self.style_state = style_state
         self.style_callback = style_callback
         self._current_tool = Tool.NONE
-        if self._external_source:
-            self.base_status_text = f"原始文件: {self.auto_saved_path}"
-        else:
-            self.base_status_text = f"自动保存: {self.auto_saved_path}"
+        self.base_status_text = self._default_base_status_text()
         self.dirty = False
         layout = QVBoxLayout()
 
@@ -1526,6 +1615,8 @@ class AnnotationTab(QWidget):
         self.canvas.optionsUpdated.connect(self._handle_canvas_update)
         self._update_panel_visibility()
         self._persist_style_defaults()
+        if not self._external_source and not self.auto_save_enabled:
+            self.dirty = True
 
         self.undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
         self.undo_shortcut.activated.connect(self._undo_last_action)
@@ -1551,7 +1642,8 @@ class AnnotationTab(QWidget):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"screenshot_{timestamp}.jpg"
         path = os.path.join(self.save_dir, filename)
-        pixmap.save(path, "JPG", self.image_quality)
+        if self.auto_save_enabled:
+            pixmap.save(path, "JPG", self.image_quality)
         return path
 
     def save_annotated_image(self):
@@ -1605,6 +1697,27 @@ class AnnotationTab(QWidget):
         if self.dirty != dirty:
             self.dirty = dirty
             self.dirtyStateChanged.emit(self.dirty)
+        if not dirty:
+            self.base_status_text = self._default_base_status_text()
+            self.status_label.setText(self.base_status_text)
+
+    def set_auto_save_enabled(self, enabled):
+        enabled = bool(enabled)
+        if self.auto_save_enabled == enabled:
+            return
+        self.auto_save_enabled = enabled
+        if not self._external_source and self.auto_save_enabled:
+            self.auto_saved_path = self._auto_save_pixmap(self.canvas.base_pixmap)
+        self.base_status_text = self._default_base_status_text()
+        if not self.dirty:
+            self.status_label.setText(self.base_status_text)
+
+    def _default_base_status_text(self):
+        if self._external_source:
+            return f"原始文件: {self.auto_saved_path}"
+        if self.auto_save_enabled:
+            return f"自动保存: {self.auto_saved_path}"
+        return f"尚未保存: {self.auto_saved_path}"
 
 
     def _undo_last_action(self):
@@ -1888,24 +2001,15 @@ class RectangleOptionsPanel(QFrame):
         self.sync_from_canvas()
 
 class AnnotationWorkspacePage(QWidget):
-    def __init__(self, open_settings_callback, open_images_callback, style_state, style_callback, image_quality):
+    def __init__(self, open_settings_callback, open_images_callback, style_state, style_callback, image_quality, auto_save_enabled):
         super().__init__()
         self._open_settings_callback = open_settings_callback
         self._open_images_callback = open_images_callback
         self._style_state = style_state
         self._style_callback = style_callback
         self._image_quality = self._clamp_quality(image_quality)
+        self._auto_save_enabled = bool(auto_save_enabled)
         layout = QVBoxLayout()
-
-        toolbar = QToolBar()
-        toolbar.setIconSize(QSize(18, 18))
-        import_action = QAction("导入图片", self)
-        import_action.triggered.connect(self._open_images_callback)
-        toolbar.addAction(import_action)
-        settings_action = QAction("系统设置", self)
-        settings_action.triggered.connect(self._open_settings_callback)
-        toolbar.addAction(settings_action)
-        layout.addWidget(toolbar)
 
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
@@ -1959,31 +2063,37 @@ class AnnotationWorkspacePage(QWidget):
         self._update_hint_visibility()
 
     def maybe_close_all(self):
-        dirty_tabs = [
-            self.tabs.widget(idx)
-            for idx in range(self.tabs.count())
-            if getattr(self.tabs.widget(idx), "dirty", False)
-        ]
+        dirty_tabs = self.get_dirty_tabs()
         if not dirty_tabs:
             return True
-        reply = QMessageBox.question(
-            self,
-            "保存所有截图",
-            "当前有未保存的截图，是否全部保存？",
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-        )
-        if reply == QMessageBox.Cancel:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("保存截图")
+        box.setText("当前有未保存的截图，选择操作：")
+        save_btn = box.addButton("保存全部后退出", QMessageBox.AcceptRole)
+        discard_btn = box.addButton("不保存直接退出", QMessageBox.DestructiveRole)
+        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked == cancel_btn:
             return False
-        if reply == QMessageBox.Yes:
-            for tab in dirty_tabs:
-                if tab and not tab.save_annotated_image():
-                    return False
+        if clicked == save_btn:
+            return self.save_all_dirty()
         return True
 
     def _create_tab(self, pixmap, save_dir, source_path=None):
-        tab = AnnotationTab(pixmap, save_dir, self._style_state, self._style_callback, self._image_quality, source_path=source_path)
+        tab = AnnotationTab(
+            pixmap,
+            save_dir,
+            self._style_state,
+            self._style_callback,
+            self._image_quality,
+            self._auto_save_enabled,
+            source_path=source_path,
+        )
         label_path = source_path or tab.auto_saved_path
         label = os.path.basename(label_path)
+        tab._base_label = label
         self.tabs.addTab(tab, label)
         self._bind_tab_signals(tab)
         self.tabs.setCurrentWidget(tab)
@@ -1999,6 +2109,9 @@ class AnnotationWorkspacePage(QWidget):
             return
         color = QColor("#f97316") if dirty else QColor("#0f172a")
         self.tabs.tabBar().setTabTextColor(index, color)
+        base_label = getattr(tab, "_base_label", self.tabs.tabText(index).lstrip("* ").strip())
+        prefix = "* " if dirty else ""
+        self.tabs.setTabText(index, f"{prefix}{base_label}")
 
     def set_image_quality(self, value):
         self._image_quality = self._clamp_quality(value)
@@ -2006,6 +2119,32 @@ class AnnotationWorkspacePage(QWidget):
             widget = self.tabs.widget(idx)
             if hasattr(widget, "set_image_quality"):
                 widget.set_image_quality(self._image_quality)
+
+    def set_auto_save_enabled(self, enabled):
+        self._auto_save_enabled = bool(enabled)
+        for tab in self._iter_tabs():
+            if hasattr(tab, "set_auto_save_enabled"):
+                tab.set_auto_save_enabled(self._auto_save_enabled)
+
+    def get_dirty_tabs(self):
+        return [
+            tab for tab in self._iter_tabs() if getattr(tab, "dirty", False)
+        ]
+
+    def has_unsaved_tabs(self):
+        return bool(self.get_dirty_tabs())
+
+    def save_all_dirty(self):
+        for tab in self.get_dirty_tabs():
+            if not tab.save_annotated_image():
+                return False
+        return True
+
+    def _iter_tabs(self):
+        for idx in range(self.tabs.count()):
+            widget = self.tabs.widget(idx)
+            if widget:
+                yield widget
 
     def _clamp_quality(self, value):
         try:
@@ -2026,8 +2165,8 @@ class CaptureOverlay(QWidget):
         self.setCursor(Qt.CrossCursor)
         self.screenshot = screenshot
         self._screen = screen
-        self.setFixedSize(self.screenshot.size())
-        self.move(origin)
+        geo = screen.geometry()
+        self.setGeometry(geo)
         self.selection = None
         self.origin = None
         self.cursor_pos = None
@@ -2067,7 +2206,8 @@ class CaptureOverlay(QWidget):
         if event.button() == Qt.LeftButton and self.selection:
             rect = self.selection.normalized()
             if rect.width() > 5 and rect.height() > 5:
-                cropped = self.screenshot.copy(rect)
+                device_rect = self._device_rect(rect)
+                cropped = self.screenshot.copy(device_rect)
                 self.selectionMade.emit(cropped, rect, self._screen.name())
             self.close()
 
@@ -2081,9 +2221,10 @@ class CaptureOverlay(QWidget):
             return
         src_half = 24
         size = QSize(src_half * 2, src_half * 2)
-        x = max(src_half, min(self.cursor_pos.x(), self.screenshot.width() - src_half - 1))
-        y = max(src_half, min(self.cursor_pos.y(), self.screenshot.height() - src_half - 1))
-        source_rect = QRect(QPoint(x - src_half, y - src_half), size)
+        x = max(src_half, min(self.cursor_pos.x(), self.width() - src_half - 1))
+        y = max(src_half, min(self.cursor_pos.y(), self.height() - src_half - 1))
+        logical_rect = QRect(QPoint(x - src_half, y - src_half), size)
+        source_rect = self._device_rect(logical_rect)
         snippet = self.screenshot.copy(source_rect)
         zoom = 6
         dest_size = QSize(size.width() * zoom, size.height() * zoom)
@@ -2109,21 +2250,35 @@ class CaptureOverlay(QWidget):
         painter.drawLine(center_x, dest_rect.top(), center_x, dest_rect.bottom())
         painter.drawLine(dest_rect.left(), center_y, dest_rect.right(), center_y)
 
+    def _device_rect(self, logical_rect: QRect):
+        ratio = self.screenshot.devicePixelRatio()
+        return QRect(
+            int(logical_rect.x() * ratio),
+            int(logical_rect.y() * ratio),
+            int(logical_rect.width() * ratio),
+            int(logical_rect.height() * ratio),
+        )
+
 
 class ScreenSnapApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, start_minimized=False):
         super().__init__()
         self.setWindowTitle("Snapshot Studio - Windows 截图工具")
         self.setWindowIcon(get_app_icon())
+        self._start_minimized = start_minimized
         self.config = load_config()
         self._active_overlays = []
         self._last_capture_screen_name = None
+        self.auto_save_enabled = bool(self.config.get("auto_save_enabled", False))
+        self.auto_start_enabled = bool(self.config.get("auto_start_enabled", False))
         self._image_quality = int(self.config.get("image_quality", DEFAULT_IMAGE_QUALITY))
         self.marker_style = self.config.get("marker_style", DEFAULT_MARKER_STYLE.copy())
         self.rectangle_style = self.config.get("rectangle_style", DEFAULT_RECT_STYLE.copy())
         self.config.setdefault("marker_style", self.marker_style)
         self.config.setdefault("rectangle_style", self.rectangle_style)
         self.config.setdefault("image_quality", self._image_quality)
+        self.config.setdefault("auto_save_enabled", self.auto_save_enabled)
+        self.config.setdefault("auto_start_enabled", self.auto_start_enabled)
         save_config(self.config)
 
         self.workspace_page = AnnotationWorkspacePage(
@@ -2132,6 +2287,7 @@ class ScreenSnapApp(QMainWindow):
             {"marker": self.marker_style, "rectangle": self.rectangle_style},
             self._on_style_changed,
             self._image_quality,
+            self.auto_save_enabled,
         )
         self._hotkey_manager = GlobalHotkeyManager(self)
         self._last_selection_rect = None
@@ -2150,14 +2306,14 @@ class ScreenSnapApp(QMainWindow):
         )
         self.nav_toolbar.setContextMenuPolicy(Qt.PreventContextMenu)
         self.nav_actions = {}
-        for text, key in [("主页", "home"), ("编辑图", "edit")]:
+        for text, key in [("主页", "home"), ("编辑图", "edit"), ("关于", "about")]:
             action = QAction(text, self)
             action.setCheckable(True)
             action.triggered.connect(lambda _, k=key: self._switch_page(k))
             self.nav_toolbar.addAction(action)
             self.nav_actions[key] = action
         exit_action = QAction("退出", self)
-        exit_action.triggered.connect(QApplication.instance().quit)
+        exit_action.triggered.connect(self.close)
         self.nav_toolbar.addAction(exit_action)
         root_layout.addWidget(self.nav_toolbar)
 
@@ -2165,24 +2321,11 @@ class ScreenSnapApp(QMainWindow):
         self.home_page = HomePage(self._save_dir)
         self.pages.addWidget(self.home_page)
         self.pages.addWidget(self.workspace_page)
-        self._pages = {"home": self.home_page, "edit": self.workspace_page}
-        placeholder_titles = {
-            "new": "新建",
-            "open": "打开",
-            "save": "保存",
-            "save_as": "另存为",
-            "print": "打印",
-            "share": "分享",
-            "close": "关闭",
-            "about": "关于 Snapshot Studio",
-        }
-        for key, title in placeholder_titles.items():
-            widget = ComingSoonPage(title)
-            self._pages[key] = widget
-            self.pages.addWidget(widget)
+        self.about_page = AboutPage()
+        self.pages.addWidget(self.about_page)
+        self._pages = {"home": self.home_page, "edit": self.workspace_page, "about": self.about_page}
         root_layout.addWidget(self.pages, 1)
 
-        self.home_page.changeFolderRequested.connect(self.choose_folder)
         self.home_page.openFolderRequested.connect(self._open_save_folder)
         self.home_page.captureRequested.connect(self.initiate_capture)
         self.home_page.repeatRequested.connect(self._repeat_capture)
@@ -2193,11 +2336,20 @@ class ScreenSnapApp(QMainWindow):
         self._update_nav_state()
 
         self.setCentralWidget(main_widget)
-        self.resize(1360, 840)
+        self.resize(900, 600)
 
         self.home_page.set_repeat_enabled(False)
         self._register_all_hotkeys()
         self._update_hotkey_summary()
+        self.tray_icon = None
+        self._tray_message_shown = False
+        self._closing_via_tray_exit = False
+        self._setup_tray_icon()
+        self._sync_autostart_entry()
+        if start_minimized:
+            QTimer.singleShot(0, self._minimize_to_tray)
+        else:
+            self.show()
 
     def _switch_page(self, key):
         if key not in self._pages:
@@ -2211,14 +2363,6 @@ class ScreenSnapApp(QMainWindow):
             action.blockSignals(True)
             action.setChecked(key == self._current_page)
             action.blockSignals(False)
-
-    def choose_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "选择保存文件夹", self._save_dir)
-        if folder:
-            self._save_dir = folder
-            self.home_page.set_save_dir(folder)
-            self.config["save_dir"] = folder
-            save_config(self.config)
 
     def _open_save_folder(self):
         os.makedirs(self._save_dir, exist_ok=True)
@@ -2304,8 +2448,19 @@ class ScreenSnapApp(QMainWindow):
             self.config["hotkeys"] = dialog.get_hotkeys()
             self.config["image_quality"] = dialog.get_image_quality()
             self._image_quality = int(self.config["image_quality"])
+            general_settings = dialog.get_general_settings()
+            self.auto_save_enabled = bool(general_settings.get("auto_save_enabled", False))
+            new_dir = general_settings.get("save_dir") or self._save_dir
+            self._save_dir = new_dir
+            self.config["save_dir"] = new_dir
+            self.config["auto_save_enabled"] = self.auto_save_enabled
+            new_auto_start = bool(general_settings.get("auto_start_enabled", False))
+            self.auto_start_enabled = new_auto_start
+            self.config["auto_start_enabled"] = self.auto_start_enabled
             save_config(self.config)
             self.workspace_page.set_image_quality(self._image_quality)
+            self.workspace_page.set_auto_save_enabled(self.auto_save_enabled)
+            self._sync_autostart_entry()
             self._register_all_hotkeys()
             self._update_hotkey_summary()
 
@@ -2385,11 +2540,53 @@ class ScreenSnapApp(QMainWindow):
             QMessageBox.warning(self, "�ظ���ͼʧ��", "��¼������ߴ���Ч�������½�ͼ��")
             self.show()
             return
-        screenshot = screen.grabWindow(0)
-        cropped = screenshot.copy(rect)
+        screenshot = self._grab_screen_pixmap(screen)
+        cropped = self._copy_from_pixmap(screenshot, rect)
         self.workspace_page.add_capture(cropped, self._save_dir)
         self._focus_workspace()
         self._resize_for_image(cropped.size())
+
+    def closeEvent(self, event):
+        if self._closing_via_tray_exit:
+            if not self.workspace_page.maybe_close_all():
+                event.ignore()
+                self._closing_via_tray_exit = False
+                return
+            self._cleanup_before_exit()
+            self._closing_via_tray_exit = False
+            super().closeEvent(event)
+            return
+        action = self._ask_close_behavior()
+        if action == "cancel":
+            event.ignore()
+            return
+        if action == "tray":
+            event.ignore()
+            self._minimize_to_tray()
+            return
+        if not self.workspace_page.maybe_close_all():
+            event.ignore()
+            return
+        self._cleanup_before_exit()
+        super().closeEvent(event)
+
+    def _ask_close_behavior(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return "exit"
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("关闭 CTK Snapshot")
+        box.setText("请选择关闭方式：")
+        exit_btn = box.addButton("直接退出程序", QMessageBox.AcceptRole)
+        tray_btn = box.addButton("最小化到系统托盘", QMessageBox.ActionRole)
+        cancel_btn = box.addButton("取消", QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked == cancel_btn:
+            return "cancel"
+        if clicked == tray_btn:
+            return "tray"
+        return "exit"
 
     def _resize_for_image(self, image_size: QSize):
         screen = QGuiApplication.primaryScreen()
@@ -2403,8 +2600,86 @@ class ScreenSnapApp(QMainWindow):
             target_h = min(target_h, available.height())
         self.resize(target_w, target_h)
 
+    def _setup_tray_icon(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon = None
+            return
+        self.tray_icon = QSystemTrayIcon(get_app_icon(), self)
+        self.tray_icon.setToolTip("CTK Snapshot")
+        tray_menu = QMenu()
+        restore_action = QAction("显示窗口", self)
+        exit_action = QAction("退出", self)
+        tray_menu.addAction(restore_action)
+        tray_menu.addAction(exit_action)
+        restore_action.triggered.connect(self._restore_from_tray)
+        exit_action.triggered.connect(self._exit_from_tray)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_icon_activated)
+        self.tray_icon.hide()
+
+    def _minimize_to_tray(self):
+        if not self.tray_icon:
+            self.hide()
+            return
+        self.tray_icon.show()
+        if not self._tray_message_shown:
+            self.tray_icon.showMessage("CTK Snapshot", "程序已最小化到系统托盘", QSystemTrayIcon.Information, 3000)
+            self._tray_message_shown = True
+        self.hide()
+
+    def _restore_from_tray(self):
+        if self.tray_icon:
+            self.tray_icon.hide()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_icon_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self._restore_from_tray()
+
+    def _exit_from_tray(self):
+        self._closing_via_tray_exit = True
+        if self.tray_icon:
+            self.tray_icon.hide()
+        self.close()
+
+    def _cleanup_before_exit(self):
+        self._clear_overlays()
+        self._teardown_hotkeys()
+        if self.tray_icon:
+            self.tray_icon.hide()
+        self.tray_icon = None
+
+    def _sync_autostart_entry(self):
+        command = self._autostart_command()
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_REG_PATH, 0, winreg.KEY_ALL_ACCESS)
+        except FileNotFoundError:
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_REG_PATH)
+        try:
+            if self.auto_start_enabled:
+                winreg.SetValueEx(key, RUN_REG_NAME, 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, RUN_REG_NAME)
+                except FileNotFoundError:
+                    pass
+        except OSError as exc:
+            QMessageBox.warning(self, "自动启动", f"无法更新系统启动项，请手动配置或以管理员身份运行。\n\n系统信息: {exc}")
+        finally:
+            winreg.CloseKey(key)
+
+    def _autostart_command(self):
+        if getattr(sys, "frozen", False):
+            exe_path = sys.executable
+            return f"\"{exe_path}\" --minimized"
+        exe_path = sys.executable
+        script_path = os.path.abspath(sys.argv[0])
+        return f"\"{exe_path}\" \"{script_path}\" --minimized"
+
     def _create_overlay_for_screen(self, screen):
-        screenshot = screen.grabWindow(0)
+        screenshot = self._grab_screen_pixmap(screen)
         overlay = CaptureOverlay(screenshot, screen.geometry().topLeft(), screen)
         overlay.selectionMade.connect(self._on_overlay_selection)
         overlay.canceled.connect(self._on_capture_cancel)
@@ -2437,24 +2712,48 @@ class ScreenSnapApp(QMainWindow):
                 return screen
         return None
 
+    def _copy_from_pixmap(self, pixmap, rect: QRect):
+        ratio = pixmap.devicePixelRatio()
+        return pixmap.copy(
+            int(rect.x() * ratio),
+            int(rect.y() * ratio),
+            int(rect.width() * ratio),
+            int(rect.height() * ratio),
+        )
+
+    def _grab_screen_pixmap(self, screen):
+        return screen.grabWindow(0)
+
 
 def main():
-    app = QApplication(sys.argv)
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    start_minimized = False
+    qt_args = []
+    for arg in sys.argv:
+        if arg == "--minimized":
+            start_minimized = True
+        else:
+            qt_args.append(arg)
+    sys.argv = qt_args
+    app = QApplication(qt_args)
     app.setStyleSheet(
         """
-        QWidget { font-size: 18px; }
-        QPushButton { font-size: 18px; }
-        QListWidget { font-size: 18px; }
-        QTabBar::tab { font-size: 17px; height: 42px; }
-        QToolBar { font-size: 17px; }
+        QWidget { font-size: 12px; }
+        QPushButton { font-size: 12px; }
+        QListWidget { font-size: 12px; }
+        QTabBar::tab { font-size: 11px; height: 30px; }
+        QToolBar { font-size: 12px; }
         """
     )
     base_font = QFont()
-    base_font.setPointSize(12)
+    base_font.setPointSize(8)
+    base_font.setFamily("Microsoft YaHei Light")
     app.setFont(base_font)
     app.setWindowIcon(get_app_icon())
-    window = ScreenSnapApp()
-    window.show()
+    window = ScreenSnapApp(start_minimized=start_minimized)
+    if not start_minimized:
+        window.show()
     sys.exit(app.exec_())
 
 
