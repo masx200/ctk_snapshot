@@ -14,20 +14,21 @@
     "fill": "#fff44336",
     "border": "#ffffaa00",
     "border_enabled": true,
-    "size": 11,
+    "size": 21,
     "font_ratio": 1.1500000000000001,
     "next_number": 1
   },
   "rectangle_style": {
     "fill": "#00000000",
-    "border": "#ffaa007f",
+    "border": "#ffff9800",
     "border_enabled": true,
-    "width": 2,
-    "radius": 0
+    "width": 4,
+    "radius": 8
   },
-  "image_quality": 100,
+  "image_quality": 70,
   "auto_save_enabled": true,
   "auto_start_enabled": true,
   "close_behavior": "tray",
-  "exit_unsaved_policy": "save_all"
+  "exit_unsaved_policy": "save_all",
+  "workspace_zoom": 1.771561
 }

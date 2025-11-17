@@ -1,4 +1,4 @@
-import ctypes
+﻿import ctypes
 from ctypes import wintypes
 import json
 import os
@@ -7,7 +7,7 @@ import winreg
 from datetime import datetime
 from enum import Enum, auto
 
-from PyQt5.QtCore import QPoint, QRect, Qt, pyqtSignal, QTimer, QUrl, QSize
+from PyQt5.QtCore import QPoint, QRect, Qt, pyqtSignal, QTimer, QUrl, QSize, QEvent
 from PyQt5.QtGui import (
     QColor,
     QGuiApplication,
@@ -712,6 +712,85 @@ class QualitySettingsPage(QWidget):
             value = DEFAULT_IMAGE_QUALITY
         return max(10, min(100, value))
 
+    def _clamp_zoom(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return max(0.25, min(2.0, value))
+
+    def _handle_tab_zoom(self, factor, source_tab=None):
+        if self._updating_zoom:
+            return
+        factor = self._clamp_zoom(factor)
+        if abs(factor - self._display_zoom) < 0.001:
+            return
+        self._updating_zoom = True
+        self._display_zoom = factor
+        for tab in self._iter_tabs():
+            if tab is source_tab:
+                continue
+            if hasattr(tab, "canvas"):
+                tab.canvas.set_zoom(factor)
+        if callable(self._zoom_callback):
+            self._zoom_callback(factor)
+        self._updating_zoom = False
+
+    def _clamp_zoom(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return max(0.25, min(2.0, value))
+
+    def _handle_tab_zoom(self, factor, source_tab=None):
+        if self._updating_zoom:
+            return
+        factor = self._clamp_zoom(factor)
+        if abs(factor - self._display_zoom) < 0.001:
+            return
+        self._updating_zoom = True
+        self._display_zoom = factor
+        for tab in self._iter_tabs():
+            if tab is source_tab:
+                continue
+            if hasattr(tab, "canvas"):
+                tab.canvas.set_zoom(factor)
+        if callable(self._zoom_callback):
+            self._zoom_callback(factor)
+        self._updating_zoom = False
+
+    def _clamp_zoom(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return max(0.25, min(2.0, value))
+
+    def _clamp_zoom(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return max(0.25, min(2.0, value))
+
+    def _handle_tab_zoom(self, factor, source_tab=None):
+        if self._updating_zoom:
+            return
+        factor = self._clamp_zoom(factor)
+        if abs(factor - self._display_zoom) < 0.001:
+            return
+        self._updating_zoom = True
+        self._display_zoom = factor
+        for tab in self._iter_tabs():
+            if tab is source_tab:
+                continue
+            if hasattr(tab, "canvas"):
+                tab.canvas.set_zoom(factor)
+        if callable(self._zoom_callback):
+            self._zoom_callback(factor)
+        self._updating_zoom = False
+
     def _sync_controls(self, value):
         self.slider.blockSignals(True)
         self.spin.blockSignals(True)
@@ -949,6 +1028,7 @@ class AboutPage(QWidget):
 
 class AnnotationCanvas(QWidget):
     optionsUpdated = pyqtSignal()
+    zoomChanged = pyqtSignal(float)
 
     HANDLE_SIZE = 12
     MIN_RECT_SIZE = 8
@@ -956,7 +1036,9 @@ class AnnotationCanvas(QWidget):
     def __init__(self, pixmap: QPixmap):
         super().__init__()
         self.base_pixmap = pixmap
-        self.setFixedSize(self.base_pixmap.size())
+        self._zoom = 1.0
+        self._min_zoom = 0.25
+        self._max_zoom = 4.0
         self.setMouseTracking(True)
         self.rectangles = []
         self.markers = []
@@ -984,6 +1066,58 @@ class AnnotationCanvas(QWidget):
         self.rect_drag_origin = QPoint()
         self.creating_new_rect = False
         self._marker_dragging = False
+        self._apply_zoom()
+
+    def zoom_factor(self):
+        return self._zoom
+
+    def set_zoom(self, factor: float):
+        factor = max(self._min_zoom, min(self._max_zoom, factor))
+        if abs(factor - self._zoom) < 0.001:
+            return
+        self._zoom = factor
+        self._apply_zoom()
+        self.zoomChanged.emit(self._zoom)
+
+    def zoom_in(self):
+        self.set_zoom(self._zoom * 1.1)
+
+    def zoom_out(self):
+        self.set_zoom(self._zoom / 1.1)
+
+    def reset_zoom(self):
+        self.set_zoom(1.0)
+
+    def _scaled_size(self):
+        return QSize(
+            max(1, int(round(self.base_pixmap.width() * self._zoom))),
+            max(1, int(round(self.base_pixmap.height() * self._zoom))),
+        )
+
+    def _apply_zoom(self):
+        size = self._scaled_size()
+        self.setFixedSize(size)
+        self.update()
+
+    def _view_to_scene(self, point: QPoint):
+        if self._zoom == 0:
+            return QPoint(point)
+        return QPoint(
+            int(round(point.x() / self._zoom)),
+            int(round(point.y() / self._zoom)),
+        )
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            elif delta < 0:
+                self.zoom_out()
+            event.accept()
+            return
+        event.ignore()
+        super().wheelEvent(event)
 
     def set_tool(self, tool: Tool):
         self.tool = tool
@@ -1274,22 +1408,24 @@ class AnnotationCanvas(QWidget):
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        if self._handle_rect_press(event, allow_creation=False, handles_only=True):
+        pos = self._view_to_scene(event.pos())
+        if self._handle_rect_press(pos, allow_creation=False, handles_only=True):
             return
-        if self._handle_marker_press(event, allow_creation=self.tool == Tool.MARKER):
+        if self._handle_marker_press(pos, allow_creation=self.tool == Tool.MARKER):
             return
-        if self._handle_rect_press(event, allow_creation=self.tool == Tool.RECTANGLE):
+        if self._handle_rect_press(pos, allow_creation=self.tool == Tool.RECTANGLE):
             return
 
     def mouseMoveEvent(self, event):
+        pos = self._view_to_scene(event.pos())
         if self.dragging_marker_index is not None and not self.markers_flattened:
-            self.markers[self.dragging_marker_index]['pos'] = event.pos()
+            self.markers[self.dragging_marker_index]['pos'] = pos
             self.update()
             return
         if self.rect_drag_mode and self.selected_rectangle_index is not None:
             info = self.rectangles[self.selected_rectangle_index]
             rect = QRect(self.rect_initial_rect)
-            delta = event.pos() - self.rect_drag_origin
+            delta = pos - self.rect_drag_origin
             if self.rect_drag_mode == 'move':
                 rect.translate(delta)
             else:
@@ -1299,11 +1435,12 @@ class AnnotationCanvas(QWidget):
                 info['rect'] = rect
             self.update()
             return
-        self._update_pointer_feedback(event.pos())
+        self._update_pointer_feedback(pos)
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
+        pos = self._view_to_scene(event.pos())
         if self.dragging_marker_index is not None:
             self._end_marker_drag()
             self.dragging_marker_index = None
@@ -1320,10 +1457,10 @@ class AnnotationCanvas(QWidget):
                     self.update()
                     self.optionsUpdated.emit()
             self._reset_rect_drag()
-        self._update_pointer_feedback(event.pos())
+        self._update_pointer_feedback(pos)
 
-    def _handle_marker_press(self, event, allow_creation=True):
-        idx = self._marker_hit_test(event.pos())
+    def _handle_marker_press(self, pos: QPoint, allow_creation=True):
+        idx = self._marker_hit_test(pos)
         if idx is not None and not self.markers_flattened:
             self.dragging_marker_index = idx
             self.selected_marker_index = idx
@@ -1336,7 +1473,7 @@ class AnnotationCanvas(QWidget):
             return True
         if allow_creation:
             marker = {
-                'pos': event.pos(),
+                'pos': pos,
                 'number': self.next_marker_number,
                 'fill': QColor(self.marker_fill_color),
                 'size': self.marker_size,
@@ -1366,10 +1503,11 @@ class AnnotationCanvas(QWidget):
     def _end_marker_drag(self):
         if self._marker_dragging:
             self._marker_dragging = False
-            self._update_pointer_feedback(self.mapFromGlobal(QCursor.pos()))
+            view_pos = self.mapFromGlobal(QCursor.pos())
+            self._update_pointer_feedback(self._view_to_scene(view_pos))
 
-    def _handle_rect_press(self, event, allow_creation=True, handles_only=False):
-        idx, handle = self._rect_handle_hit_test(event.pos())
+    def _handle_rect_press(self, pos: QPoint, allow_creation=True, handles_only=False):
+        idx, handle = self._rect_handle_hit_test(pos)
         if idx is not None:
             self.selected_rectangle_index = idx
             self.selected_marker_index = None
@@ -1377,7 +1515,7 @@ class AnnotationCanvas(QWidget):
             self.rect_drag_mode = 'resize'
             self.rect_drag_handle = handle
             self.rect_initial_rect = QRect(self.rectangles[idx]['rect'])
-            self.rect_drag_origin = event.pos()
+            self.rect_drag_origin = QPoint(pos)
             self.rectangles_flattened = False
             self.creating_new_rect = False
             self._set_hover_marker(None)
@@ -1389,14 +1527,14 @@ class AnnotationCanvas(QWidget):
             return True
         if handles_only:
             return False
-        idx = self._rect_hit_test(event.pos())
+        idx = self._rect_hit_test(pos)
         if idx is not None:
             self.selected_rectangle_index = idx
             self.selected_marker_index = None
             self.dragging_marker_index = None
             self.rect_drag_mode = 'move'
             self.rect_initial_rect = QRect(self.rectangles[idx]['rect'])
-            self.rect_drag_origin = event.pos()
+            self.rect_drag_origin = QPoint(pos)
             self.rectangles_flattened = False
             self.creating_new_rect = False
             self._set_hover_marker(None)
@@ -1406,7 +1544,7 @@ class AnnotationCanvas(QWidget):
         if not allow_creation:
             return False
         rect_info = {
-            'rect': QRect(event.pos(), event.pos()),
+            'rect': QRect(pos, pos),
             'fill': QColor(self.rectangle_fill_color),
             'border': QColor(self.rectangle_border_color),
             'border_enabled': self.rectangle_border_enabled,
@@ -1421,7 +1559,7 @@ class AnnotationCanvas(QWidget):
         self.rect_drag_mode = 'resize'
         self.rect_drag_handle = 'bottom-right'
         self.rect_initial_rect = QRect(rect_info['rect'])
-        self.rect_drag_origin = event.pos()
+        self.rect_drag_origin = QPoint(pos)
         self.rectangles_flattened = False
         self.creating_new_rect = True
         self._set_hover_marker(None)
@@ -1431,8 +1569,10 @@ class AnnotationCanvas(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.drawPixmap(0, 0, self.base_pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.scale(self._zoom, self._zoom)
+        painter.drawPixmap(0, 0, self.base_pixmap)
         for idx, info in enumerate(self.rectangles):
             painter.setBrush(info['fill'])
             if info['border_enabled']:
@@ -1606,7 +1746,17 @@ class AnnotationCanvas(QWidget):
 
 class AnnotationTab(QWidget):
     dirtyStateChanged = pyqtSignal(bool)
-    def __init__(self, pixmap: QPixmap, save_dir: str, style_state, style_callback, image_quality, auto_save_enabled, source_path=None):
+    def __init__(
+        self,
+        pixmap: QPixmap,
+        save_dir: str,
+        style_state,
+        style_callback,
+        image_quality,
+        auto_save_enabled,
+        source_path=None,
+        initial_zoom=1.0,
+    ):
         super().__init__()
         self.image_quality = self._clamp_quality(image_quality)
         self.auto_save_enabled = bool(auto_save_enabled)
@@ -1668,11 +1818,20 @@ class AnnotationTab(QWidget):
         layout.addWidget(self.panel_stack)
 
         scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
         scroll.setWidget(self.canvas)
+        scroll.viewport().installEventFilter(self)
+        self.canvas.installEventFilter(self)
+        self._scroll_area = scroll
         layout.addWidget(scroll, 1)
 
+        status_layout = QHBoxLayout()
         self.status_label = QLabel(self.base_status_text)
-        layout.addWidget(self.status_label)
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setStyleSheet("color: #4c566a;")
+        status_layout.addWidget(self.status_label, 1)
+        status_layout.addWidget(self.zoom_label, 0, alignment=Qt.AlignRight)
+        layout.addLayout(status_layout)
         self.setLayout(layout)
         self.canvas.optionsUpdated.connect(self._handle_canvas_update)
         self._update_panel_visibility()
@@ -1690,6 +1849,10 @@ class AnnotationTab(QWidget):
         self.save_shortcut.activated.connect(self.save_annotated_image)
         self.escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.escape_shortcut.activated.connect(self._handle_escape)
+        self.canvas.zoomChanged.connect(self._on_zoom_changed)
+        self.reset_zoom_shortcut = QShortcut(QKeySequence("Ctrl+0"), self)
+        self.reset_zoom_shortcut.activated.connect(self.canvas.reset_zoom)
+        self.canvas.set_zoom(initial_zoom)
 
     def _clamp_quality(self, value):
         try:
@@ -1737,6 +1900,11 @@ class AnnotationTab(QWidget):
         if self._current_tool in (Tool.MARKER,):
             self._set_tool(Tool.NONE)
 
+    def _on_zoom_changed(self, factor):
+        if hasattr(self, "zoom_label"):
+            percent = int(round(factor * 100))
+            self.zoom_label.setText(f"{percent}%")
+
     def _update_panel_visibility(self, preferred=None):
         kind = self.canvas.active_selection_kind()
         if kind == "marker":
@@ -1751,6 +1919,24 @@ class AnnotationTab(QWidget):
             self.panel_stack.setCurrentWidget(self.rectangle_panel)
         else:
             self.panel_stack.setCurrentWidget(self._options_placeholder)
+
+    def eventFilter(self, obj, event):
+        viewport = getattr(self, "_scroll_area", None)
+        viewport_widget = viewport.viewport() if viewport else None
+        if (
+            event.type() == QEvent.Wheel
+            and obj in (self.canvas, viewport_widget)
+            and event.modifiers() & Qt.ControlModifier
+        ):
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if delta == 0:
+                return True
+            if delta > 0:
+                self.canvas.zoom_in()
+            elif delta < 0:
+                self.canvas.zoom_out()
+            return True
+        return super().eventFilter(obj, event)
 
     def _mark_dirty(self):
         self.status_label.setText(f"{self.base_status_text} *未保存")
@@ -2065,7 +2251,17 @@ class RectangleOptionsPanel(QFrame):
         self.sync_from_canvas()
 
 class AnnotationWorkspacePage(QWidget):
-    def __init__(self, open_settings_callback, open_images_callback, style_state, style_callback, image_quality, auto_save_enabled):
+    def __init__(
+        self,
+        open_settings_callback,
+        open_images_callback,
+        style_state,
+        style_callback,
+        image_quality,
+        auto_save_enabled,
+        default_zoom=1.0,
+        zoom_changed_callback=None,
+    ):
         super().__init__()
         self._open_settings_callback = open_settings_callback
         self._open_images_callback = open_images_callback
@@ -2073,6 +2269,9 @@ class AnnotationWorkspacePage(QWidget):
         self._style_callback = style_callback
         self._image_quality = self._clamp_quality(image_quality)
         self._auto_save_enabled = bool(auto_save_enabled)
+        self._display_zoom = self._clamp_zoom(default_zoom)
+        self._zoom_callback = zoom_changed_callback
+        self._updating_zoom = False
         layout = QVBoxLayout()
 
         self.tabs = QTabWidget()
@@ -2094,8 +2293,8 @@ class AnnotationWorkspacePage(QWidget):
         self._empty_hint.setVisible(not has_tabs)
         self.tabs.setVisible(has_tabs)
 
-    def add_capture(self, pixmap: QPixmap, save_dir: str):
-        self._create_tab(pixmap, save_dir)
+    def add_capture(self, pixmap: QPixmap, save_dir: str, initial_zoom=1.0):
+        self._create_tab(pixmap, save_dir, initial_zoom=initial_zoom)
 
     def open_image_files(self, file_paths):
         invalid = []
@@ -2109,7 +2308,7 @@ class AnnotationWorkspacePage(QWidget):
                 invalid.append(path)
                 continue
             save_dir = os.path.dirname(path) or DEFAULT_SAVE_DIR
-            self._create_tab(pixmap, save_dir, source_path=path)
+            self._create_tab(pixmap, save_dir, source_path=path, initial_zoom=self._display_zoom)
             created = True
         if invalid:
             msg = "\n".join(path for path in invalid if path)
@@ -2145,7 +2344,7 @@ class AnnotationWorkspacePage(QWidget):
             return self.save_all_dirty()
         return True
 
-    def _create_tab(self, pixmap, save_dir, source_path=None):
+    def _create_tab(self, pixmap, save_dir, source_path=None, initial_zoom=1.0):
         tab = AnnotationTab(
             pixmap,
             save_dir,
@@ -2154,6 +2353,7 @@ class AnnotationWorkspacePage(QWidget):
             self._image_quality,
             self._auto_save_enabled,
             source_path=source_path,
+            initial_zoom=initial_zoom,
         )
         label_path = source_path or tab.auto_saved_path
         label = os.path.basename(label_path)
@@ -2166,6 +2366,8 @@ class AnnotationWorkspacePage(QWidget):
     def _bind_tab_signals(self, tab):
         tab.dirtyStateChanged.connect(lambda dirty, t=tab: self._update_tab_color(t, dirty))
         self._update_tab_color(tab, tab.dirty)
+        if hasattr(tab, "canvas"):
+            tab.canvas.zoomChanged.connect(lambda factor, t=tab: self._handle_tab_zoom(factor, t))
 
     def _update_tab_color(self, tab, dirty):
         index = self.tabs.indexOf(tab)
@@ -2216,6 +2418,30 @@ class AnnotationWorkspacePage(QWidget):
         except (TypeError, ValueError):
             value = DEFAULT_IMAGE_QUALITY
         return max(10, min(100, value))
+
+    def _clamp_zoom(self, value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return 1.0
+        return max(0.25, min(2.0, value))
+
+    def _handle_tab_zoom(self, factor, source_tab=None):
+        if self._updating_zoom:
+            return
+        factor = self._clamp_zoom(factor)
+        if abs(factor - self._display_zoom) < 0.001:
+            return
+        self._updating_zoom = True
+        self._display_zoom = factor
+        for tab in self._iter_tabs():
+            if tab is source_tab:
+                continue
+            if hasattr(tab, "canvas"):
+                tab.canvas.set_zoom(factor)
+        if callable(self._zoom_callback):
+            self._zoom_callback(factor)
+        self._updating_zoom = False
 
 
 class CaptureOverlay(QWidget):
@@ -2373,6 +2599,8 @@ class ScreenSnapApp(QMainWindow):
         self.auto_save_enabled = bool(self.config.get("auto_save_enabled", False))
         self.auto_start_enabled = bool(self.config.get("auto_start_enabled", False))
         self._image_quality = int(self.config.get("image_quality", DEFAULT_IMAGE_QUALITY))
+        self.workspace_zoom = float(self.config.get("workspace_zoom", 1.0))
+        self.workspace_zoom = max(0.25, min(2.0, self.workspace_zoom))
         self.close_behavior = self.config.get("close_behavior", "tray")
         if self.close_behavior not in ("tray", "exit"):
             self.close_behavior = "tray"
@@ -2386,6 +2614,7 @@ class ScreenSnapApp(QMainWindow):
         self.config.setdefault("image_quality", self._image_quality)
         self.config.setdefault("auto_save_enabled", self.auto_save_enabled)
         self.config.setdefault("auto_start_enabled", self.auto_start_enabled)
+        self.config.setdefault("workspace_zoom", self.workspace_zoom)
         self.config.setdefault("close_behavior", self.close_behavior)
         self.config.setdefault("exit_unsaved_policy", self.exit_unsaved_policy)
         save_config(self.config)
@@ -2397,6 +2626,8 @@ class ScreenSnapApp(QMainWindow):
             self._on_style_changed,
             self._image_quality,
             self.auto_save_enabled,
+            default_zoom=self.workspace_zoom,
+            zoom_changed_callback=self._on_workspace_zoom_changed,
         )
         self._hotkey_manager = GlobalHotkeyManager(self)
         self._last_selection_rect = None
@@ -2445,7 +2676,7 @@ class ScreenSnapApp(QMainWindow):
         self._update_nav_state()
 
         self.setCentralWidget(main_widget)
-        self.resize(900, 600)
+        self.resize(1100, 750)
 
         self.home_page.set_repeat_enabled(False)
         self._register_all_hotkeys()
@@ -2527,7 +2758,7 @@ class ScreenSnapApp(QMainWindow):
         self._clear_overlays()
         self._last_selection_rect = QRect(selection_rect)
         self._last_capture_screen_name = screen_name
-        self.workspace_page.add_capture(pixmap, self._save_dir)
+        self.workspace_page.add_capture(pixmap, self._save_dir, self.workspace_zoom)
         self.home_page.set_repeat_enabled(True)
         self._focus_workspace()
         self._resize_for_image(pixmap.size())
@@ -2557,6 +2788,19 @@ class ScreenSnapApp(QMainWindow):
         summary_text = "\n".join(summary_lines) if summary_lines else "尚未配置快捷键。"
         if hasattr(self, "home_page"):
             self.home_page.set_hotkey_summary(summary_text)
+
+
+    def _on_workspace_zoom_changed(self, factor):
+        try:
+            factor = float(factor)
+        except (TypeError, ValueError):
+            return
+        clamped = max(0.25, min(2.0, factor))
+        if abs(clamped - self.workspace_zoom) < 0.001:
+            return
+        self.workspace_zoom = clamped
+        self.config["workspace_zoom"] = self.workspace_zoom
+        save_config(self.config)
 
     def _open_settings_dialog(self, parent=None):
         dialog = SettingsDialog(parent or self, self.config)
@@ -2666,7 +2910,7 @@ class ScreenSnapApp(QMainWindow):
             return
         screenshot = self._grab_screen_pixmap(screen)
         cropped = self._copy_from_pixmap(screenshot, rect, screen)
-        self.workspace_page.add_capture(cropped, self._save_dir)
+        self.workspace_page.add_capture(cropped, self._save_dir, self.workspace_zoom)
         self._focus_workspace()
         self._resize_for_image(cropped.size())
         QApplication.clipboard().setPixmap(cropped)
@@ -2701,18 +2945,7 @@ class ScreenSnapApp(QMainWindow):
         return self.workspace_page.maybe_close_all()
 
     def _resize_for_image(self, image_size: QSize):
-        screen = QGuiApplication.primaryScreen()
-        available = screen.availableGeometry() if screen else None
-        margin_w, margin_h = 360, 300
-        min_w, min_h = 1000, 700
-        target_w = max(min_w, image_size.width() + margin_w)
-        target_h = max(min_h, image_size.height() + margin_h)
-        if available:
-            max_w = max(min_w, available.width() - 20)
-            max_h = max(min_h, available.height() - 20)
-            target_w = min(target_w, max_w)
-            target_h = min(target_h, max_h)
-        self.resize(target_w, target_h)
+        return
 
     def _setup_tray_icon(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -2853,6 +3086,18 @@ class ScreenSnapApp(QMainWindow):
             h = pix_h - y
         return QRect(x, y, w, h)
 
+    def _display_zoom_factor(self, pixmap: QPixmap, logical_rect: QRect):
+        if pixmap.isNull() or logical_rect.width() <= 0 or logical_rect.height() <= 0:
+            return 1.0
+        pix_w = pixmap.width()
+        pix_h = pixmap.height()
+        ratio_w = logical_rect.width() / float(pix_w) if pix_w else 1.0
+        ratio_h = logical_rect.height() / float(pix_h) if pix_h else 1.0
+        ratio = min(ratio_w, ratio_h)
+        if ratio <= 0:
+            return 1.0
+        return max(0.1, min(1.0, ratio))
+
     def _grab_screen_pixmap(self, screen):
         native = screen.grabWindow(0)
         native.setDevicePixelRatio(1.0)
@@ -2871,19 +3116,6 @@ def main():
             qt_args.append(arg)
     sys.argv = qt_args
     app = QApplication(qt_args)
-    app.setStyleSheet(
-        """
-        QWidget { font-size: 12px; }
-        QPushButton { font-size: 12px; }
-        QListWidget { font-size: 12px; }
-        QTabBar::tab { font-size: 11px; height: 30px; }
-        QToolBar { font-size: 12px; }
-        """
-    )
-    base_font = QFont()
-    base_font.setPointSize(8)
-    base_font.setFamily("Microsoft YaHei Light")
-    app.setFont(base_font)
     app.setWindowIcon(get_app_icon())
     window = ScreenSnapApp(start_minimized=start_minimized)
     if not start_minimized:
