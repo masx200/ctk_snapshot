@@ -11,7 +11,7 @@
     }
   },
   "marker_style": {
-    "fill": "#fff44336",
+    "fill": "#ffff5500",
     "border": "#ffffaa00",
     "border_enabled": true,
     "size": 21,
@@ -20,7 +20,7 @@
   },
   "rectangle_style": {
     "fill": "#00000000",
-    "border": "#ffff9800",
+    "border": "#ffff6b6b",
     "border_enabled": true,
     "width": 4,
     "radius": 8
@@ -30,5 +30,5 @@
   "auto_start_enabled": true,
   "close_behavior": "tray",
   "exit_unsaved_policy": "save_all",
-  "workspace_zoom": 1.771561
+  "workspace_zoom": 0.38554328942953137
 }
